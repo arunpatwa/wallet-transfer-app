@@ -43,16 +43,47 @@ function check(description, passed, detail = '') {
   process.stdout.write(`  ${mark}  ${description}${detail ? dim(` -- ${detail}`) : ''}\n`);
 }
 
-async function request(path, { method = 'GET', token, body, headers = {} } = {}) {
-  const response = await fetch(`${BASE_URL}${path}`, {
-    method,
-    headers: {
-      ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Retries only *network-level* failures -- a connection reset, DNS hiccup or TLS
+ * error, where no HTTP response was ever received. An HTTP response of any
+ * status is a result and is returned as-is; retrying a 422 would corrupt the
+ * very counts this gate exists to check.
+ *
+ * Retrying is safe by construction rather than by luck: every mutating request
+ * here carries an idempotency key, so a retry of a request that may or may not
+ * have landed either applies for the first time or replays the recorded
+ * outcome. That is the guarantee under test, used to test itself.
+ *
+ * Necessary because a free-tier host under a 30-way concurrent burst will
+ * occasionally drop a connection, and aborting the whole gate on one dropped
+ * socket would report a network blip as a correctness failure.
+ */
+async function request(path, { method = 'GET', token, body, headers = {} } = {}, attempt = 1) {
+  const MAX_ATTEMPTS = 4;
+  let response;
+
+  try {
+    response = await fetch(`${BASE_URL}${path}`, {
+      method,
+      headers: {
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...headers,
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    if (attempt < MAX_ATTEMPTS) {
+      await sleep(300 * attempt);
+      return request(path, { method, token, body, headers }, attempt + 1);
+    }
+    throw new Error(
+      `${method} ${path} failed at the network level after ${MAX_ATTEMPTS} attempts: ${err.message}`,
+    );
+  }
+
   let parsed = null;
   try {
     parsed = await response.json();
