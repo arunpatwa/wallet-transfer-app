@@ -50,6 +50,8 @@ One `READ COMMITTED` transaction. Four statements:
 
 **Where I was wrong.** I believed sorting the *upsert* ordered lock acquisition and that `FOR UPDATE` bought nothing. Both false: `ON CONFLICT DO NOTHING` takes no lasting lock on an existing row, so lock order was set by debit-then-credit — the transfer's *direction*. A→B took A then B while B→A took B then A, and deadlocked. Measured: 40 opposite-direction transfers produced 503s and a 500 over **14.2s**; with the sorted `FOR UPDATE`, **0.43s**. It orders locks only — affordability is still decided atomically by step 4, so no read-then-write window.
 
+**Why this is the simplest correct mechanism.** It adds nothing: no second datastore, no isolation upgrade, no lock manager, no application retry loop, no background reconciliation. It is four statements and four constraints, all resolved by guarantees Postgres already provides, and the whole thing is verifiable by reading the SQL. Every alternative below adds a moving part in exchange for a property this already has.
+
 **Rejected alternatives:** `SERIALIZABLE` (turns contention into retry storms); `FOR UPDATE` *as the affordability check* (read-then-write is the overspend bug — distinct from using it to order locks); advisory locks on the pair (serialises non-conflicting transfers); Redis/external lock (a second system that can disagree about whether money moved; expiry mid-commit is a double-spend); app mutex or single-writer queue (dies at two replicas); idempotency records in a separate store (drifts from the money it guards).
 
 ## Idempotency
