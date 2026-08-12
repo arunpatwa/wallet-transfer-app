@@ -303,8 +303,8 @@ npm ci && npm test            # integration + in-process concurrency tests
 Against the deployed service:
 
 ```bash
-./burst.sh https://<app>.onrender.com    # all-PASS, exit 0
-curl https://<app>.onrender.com/invariants
+./burst.sh https://wallet-transfer-app.onrender.com    # all-PASS, exit 0
+curl https://wallet-transfer-app.onrender.com/invariants
 ```
 
 Manual checks: `docker compose stop db`, then confirm `/healthz` is still 200 while `/readyz` returns 503; confirm `/logs` shows correlation ids and all the required event types; `docker image ls` for size and `docker inspect` for non-root user and healthcheck.

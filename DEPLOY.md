@@ -36,11 +36,11 @@ Migrations are safe to run on every boot and on several instances at once: the r
 ## 3. Verify
 
 ```bash
-curl https://<app>.onrender.com/healthz      # {"status":"ok",...}
-curl https://<app>.onrender.com/readyz       # {"status":"ready","datastore":{"ok":true,...}}
-curl https://<app>.onrender.com/invariants   # ledger_balanced: true
+curl https://wallet-transfer-app.onrender.com/healthz      # {"status":"ok",...}
+curl https://wallet-transfer-app.onrender.com/readyz       # {"status":"ready","datastore":{"ok":true,...}}
+curl https://wallet-transfer-app.onrender.com/invariants   # ledger_balanced: true
 
-./burst.sh https://<app>.onrender.com        # must print all-PASS and exit 0
+./burst.sh https://wallet-transfer-app.onrender.com        # must print all-PASS and exit 0
 ```
 
 `/` is the dashboard, `/logs` the public log view.
@@ -49,7 +49,7 @@ curl https://<app>.onrender.com/invariants   # ledger_balanced: true
 
 Render's free tier spins a service down after 15 minutes idle; the next request then waits 30–60s for a cold start. A reviewer hitting that would think the service is broken.
 
-Point a free scheduler ([cron-job.org](https://cron-job.org) or UptimeRobot) at `https://<app>.onrender.com/healthz` every **10 minutes**.
+Point a free scheduler ([cron-job.org](https://cron-job.org) or UptimeRobot) at `https://wallet-transfer-app.onrender.com/healthz` every **10 minutes**.
 
 This stays inside the free allowance: Render grants 750 instance-hours per workspace per month, and one always-on service uses ~730 in a 31-day month. `/healthz` is the right target — it touches no dependency, so the ping costs nothing beyond the HTTP round trip and cannot generate database load.
 

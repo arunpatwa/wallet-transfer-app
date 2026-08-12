@@ -2,17 +2,20 @@
 
 Users hold a balance in integer paise and transfer to each other. Money is never lost or created, a retried transfer never applies twice, and no one can move anyone else's money — including under a concurrent burst.
 
-- **Live URL** — _to be filled in once deployed_
-- **Logs** — `<live-url>/logs` (public, no login) · **Dashboard** — `<live-url>/`
-- **Design** — [plan.md](plan.md) · **Write-up** — [WRITEUP.md](WRITEUP.md)
+- **Live URL** — <https://wallet-transfer-app.onrender.com>
+- **Logs** — <https://wallet-transfer-app.onrender.com/logs> (public, no login) · **Dashboard** — <https://wallet-transfer-app.onrender.com/>
+- **Repo** — <https://github.com/arunpatwa/wallet-transfer-app>
+- **Design** — [plan.md](plan.md) · **Write-up** — [WRITEUP.md](WRITEUP.md) · **Deploy** — [DEPLOY.md](DEPLOY.md)
 
 ## Run the correctness gate
 
-One command. Creates brand-new users each run, so it is safe to run repeatedly.
+One command, against the live service. Creates brand-new users each run, so it is safe to run repeatedly.
 
 ```bash
-./burst.sh https://<live-url>      # or just ./burst.sh for localhost:8080
+./burst.sh https://wallet-transfer-app.onrender.com
 ```
+
+Last run against production: **37/37 checks passed**, including 30 concurrent first-transfers to a brand-new wallet, 25 concurrent retries of one idempotency key, and 50 simultaneous transfers against a balance affording exactly 5.
 
 It fires overlapping first-transfers, concurrent retries of one idempotency key, and an overspend probe, then asserts that money is conserved, wallets are created exactly once, retries apply once, and nothing 5xxs. Prints a PASS/FAIL table and exits non-zero on any failure.
 
