@@ -1,19 +1,15 @@
 /**
- * Demo-only endpoints, each behind its own flag and both default-off.
- *
- * They exist so the correctness gate is runnable with a single command against
- * a live URL. Neither is part of the production surface, and the service's
- * security does not depend on them being absent -- token verification never
- * consults the minting endpoint, and the faucet moves money along the same
- * audited transfer path as everything else.
+ * Demo endpoints, each flag-gated and default-off, so the correctness gate runs
+ * as one command against a live URL. Neither is a production surface, and
+ * security does not depend on their absence: token verification never consults
+ * the minter, and the faucet moves money along the normal transfer path.
  */
 import { Router } from 'express';
 import { signToken, requireAuth } from '../auth.js';
 import { getConfig } from '../config.js';
-import { TREASURY_USER_ID } from '../constants.js';
+import { TREASURY_USER_ID, TRANSFER_STATUS } from '../constants.js';
 import { insufficientFunds, invalidRequest, notEnabled } from '../errors.js';
 import { log } from '../logger.js';
-import { TRANSFER_STATUS } from '../constants.js';
 import { findWallet } from '../services/accounts.js';
 import { executeTransfer } from '../services/transfers.js';
 import {
@@ -29,17 +25,14 @@ const config = getConfig();
 
 export const demoRouter = Router();
 
-/**
- * Stands in for an identity provider. In a real deployment tokens arrive from
- * the IdP and this endpoint does not exist.
- */
+/** Stands in for an identity provider. */
 demoRouter.post(
   '/auth/token',
   asyncHandler(async (req, res) => {
     if (!config.demo.tokenEndpointEnabled) throw notEnabled('POST /auth/token');
 
     assertObjectBody(req.body);
-    // The grammar excludes '@', so no token can ever be minted for the treasury.
+    // The grammar excludes '@', so no token can be minted for the treasury.
     const userId = assertUserId(req.body.user_id, 'user_id');
 
     log().info({ event: 'auth.token_issued', subject: userId }, 'issued a demo token');
@@ -54,10 +47,9 @@ demoRouter.post(
 );
 
 /**
- * Moves money from the treasury to the caller so a fresh wallet has something
- * to send. Uses the normal transfer path, so the money is conserved and
- * auditable rather than conjured: the treasury's balance falls by exactly what
- * the caller's rises, and the ledger records both halves.
+ * Treasury -> caller, so a fresh wallet has something to send. Moves money
+ * rather than creating it: the treasury falls by exactly what the caller rises,
+ * and the ledger records both halves.
  */
 demoRouter.post(
   '/dev/credit',
@@ -76,9 +68,9 @@ demoRouter.post(
       );
     }
 
-    // Idempotency is scoped to (from_user, key) and every faucet credit shares
-    // the treasury as sender, so the key is namespaced by the recipient.
-    // Without this, two users choosing the same key would collide.
+    // Idempotency is scoped to (from_user, key) and every credit shares the
+    // treasury as sender, so the key is namespaced by recipient to stop two
+    // users colliding on the same key.
     const scopedKey = `credit:${req.caller}:${idempotencyKey}`;
 
     const result = await executeTransfer({
@@ -95,8 +87,7 @@ demoRouter.post(
       throw insufficientFunds({ transfer_id: result.transfer.id });
     }
 
-    // executeTransfer reports the sender's balance, which here is the
-    // treasury's. The caller wants their own.
+    // executeTransfer reports the sender's balance, which here is the treasury's.
     const wallet = await findWallet(req.caller);
 
     res.status(201).json({

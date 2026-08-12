@@ -1,6 +1,3 @@
-/**
- * Process entrypoint: boot, serve, and shut down without dropping a request.
- */
 import { createApp } from './app.js';
 import { getConfig } from './config.js';
 import { checkDatastore, closePool } from './db/pool.js';
@@ -21,20 +18,21 @@ const server = app.listen(config.port, () => {
   );
 });
 
-// Probed once at boot so a broken DATABASE_URL is visible in the logs
-// immediately rather than on the first transfer. Deliberately not fatal: the
-// process stays up and reports itself unready, which lets the platform show a
-// failing readiness check instead of a crash loop.
+// Probed at boot so a broken DATABASE_URL is visible immediately. Deliberately
+// not fatal: the process stays up and reports itself unready, which shows as a
+// failing readiness check rather than a crash loop.
 checkDatastore().then((result) => {
-  const level = result.ok ? 'info' : 'error';
-  rootLogger[level]({ event: 'db.startup_probe', ...result }, 'datastore probe');
+  rootLogger[result.ok ? 'info' : 'error'](
+    { event: 'db.startup_probe', ...result },
+    'datastore probe',
+  );
 });
 
 async function shutdown(signal) {
   rootLogger.info({ event: 'server.shutdown_started', signal }, 'shutting down');
 
-  // Stop accepting new connections, let in-flight requests finish, then release
-  // the pool. Closing the pool first would fail requests that are mid-transfer.
+  // Drain in-flight requests before releasing the pool; closing the pool first
+  // would fail requests that are mid-transfer.
   server.close(async () => {
     try {
       await closePool();
@@ -46,7 +44,6 @@ async function shutdown(signal) {
     }
   });
 
-  // Backstop: never hang forever holding a container slot.
   setTimeout(() => {
     rootLogger.error({ event: 'server.shutdown_timeout' }, 'forcing exit');
     process.exit(1);

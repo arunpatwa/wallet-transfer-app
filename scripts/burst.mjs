@@ -1,13 +1,9 @@
 #!/usr/bin/env node
 /**
- * The correctness gate.
- *
- * Fires overlapping transfers and retries at a running service and asserts that
- * money is conserved, wallets are created exactly once, retries apply once, and
- * nothing ever 5xxs. Every run uses brand-new user ids, so it is safe to run
- * repeatedly against the same deployment.
- *
- * Zero dependencies: Node's built-in fetch only.
+ * The correctness gate. Fires overlapping transfers and retries at a running
+ * service and asserts money is conserved, wallets are created exactly once,
+ * retries apply once, and nothing 5xxs. Fresh user ids each run, so it is safe
+ * to re-run. Zero dependencies.
  *
  *   node scripts/burst.mjs https://your-service.example.com
  */
@@ -46,19 +42,14 @@ function check(description, passed, detail = '') {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Retries only *network-level* failures -- a connection reset, DNS hiccup or TLS
- * error, where no HTTP response was ever received. An HTTP response of any
- * status is a result and is returned as-is; retrying a 422 would corrupt the
- * very counts this gate exists to check.
+ * Retries network-level failures only -- no HTTP response received. Any status
+ * is a result and returned as-is; retrying a 422 would corrupt the counts this
+ * gate checks.
  *
- * Retrying is safe by construction rather than by luck: every mutating request
- * here carries an idempotency key, so a retry of a request that may or may not
- * have landed either applies for the first time or replays the recorded
- * outcome. That is the guarantee under test, used to test itself.
- *
- * Necessary because a free-tier host under a 30-way concurrent burst will
- * occasionally drop a connection, and aborting the whole gate on one dropped
- * socket would report a network blip as a correctness failure.
+ * Safe by construction: every mutating request carries an idempotency key, so a
+ * retry either applies once or replays the recorded outcome. Needed because a
+ * free-tier host under a 30-way burst occasionally drops a connection, and
+ * aborting on one dropped socket reports a network blip as a correctness bug.
  */
 async function request(path, { method = 'GET', token, body, headers = {} } = {}, attempt = 1) {
   const MAX_ATTEMPTS = 4;
@@ -139,10 +130,8 @@ const transfer = (token, toUser, amountPaise, idempotencyKey) =>
     body: { to_user: toUser, amount_paise: amountPaise, idempotency_key: idempotencyKey },
   });
 
-/**
- * A free-tier host may have spun the service down; a cold start takes up to a
- * minute. Waiting here keeps that from looking like a failed gate.
- */
+/** A free-tier host may have spun down; waiting keeps a cold start from
+ *  looking like a failed gate. */
 async function waitUntilAwake() {
   const deadline = Date.now() + 120_000;
   let announced = false;

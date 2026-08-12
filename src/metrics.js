@@ -1,10 +1,8 @@
 /**
- * Prometheus metrics, exposed at GET /metrics.
- *
- * Latency is recorded twice on purpose: a histogram, which is what you need to
- * aggregate percentiles correctly across instances in Prometheus, and a summary
- * with pre-computed quantiles, so p99 is readable straight off /metrics without
- * a Prometheus server standing in front of it.
+ * Prometheus metrics. Latency is recorded twice on purpose: a histogram, which
+ * aggregates percentiles correctly across instances, and a summary with
+ * pre-computed quantiles, so p99 is readable straight off /metrics without a
+ * Prometheus server in front of it.
  */
 import {
   Registry,
@@ -30,8 +28,8 @@ export const httpRequestDuration = new Histogram({
   name: 'http_request_duration_seconds',
   help: 'HTTP request latency in seconds.',
   labelNames: ['method', 'route', 'status'],
-  // Tuned for a database-bound API: dense where a single indexed round trip
-  // lands, with headroom out to the statement timeout.
+  // Dense where a single indexed round trip lands, with headroom to the
+  // statement timeout.
   buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
   registers: [registry],
 });

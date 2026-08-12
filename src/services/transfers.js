@@ -1,17 +1,5 @@
 /**
- * The transfer path. This is the only place money moves.
- *
- * Everything happens in one READ COMMITTED transaction with no explicit
- * locking. Three SQL primitives carry the correctness:
- *
- *   1. INSERT ... ON CONFLICT DO UPDATE on (from_user, idempotency_key)
- *      claims the key and, when it loses, blocks until the winner commits and
- *      then returns the winner's committed row.
- *   2. INSERT ... ON CONFLICT DO NOTHING creates both wallets with no
- *      SELECT-then-INSERT window, in sorted order so concurrent opposite-
- *      direction transfers cannot deadlock.
- *   3. UPDATE ... WHERE balance_paise >= amount decides affordability and
- *      applies the debit in one atomic statement, so the check cannot go stale.
+ * The transfer path: the only place money moves. One READ COMMITTED transaction.
  */
 import { randomUUID } from 'node:crypto';
 import { withTransaction } from '../db/pool.js';
@@ -26,25 +14,17 @@ export const OUTCOME = Object.freeze({
   REJECTED: 'rejected',
 });
 
-/**
- * A replay whose winning row was written this recently is treated as a lost
- * concurrency race rather than an ordinary client retry. Both are handled
- * identically; the distinction exists only so the logs show which is which.
- */
+/** A replay of a row this new was a concurrent race, not a late retry. Logging only. */
 const CONCURRENT_WINDOW_MS = 2000;
 
 /**
- * Claims the idempotency key. The first write of the transaction, before any
- * balance changes, so the key and the money commit or roll back together.
+ * Claims the key, as the transaction's first write, so key and money commit
+ * together.
  *
- * DO UPDATE rather than DO NOTHING is the crux. On conflict with an in-flight
- * transaction, DO UPDATE waits for that transaction and then returns the
- * committed row. DO NOTHING would return zero rows, and a follow-up SELECT
- * under READ COMMITTED could not see the winner's uncommitted row -- which is
- * the classic find-or-create failure: the loser either errors on a missing row
- * or proceeds and moves the money twice.
- *
- * The SET is a deliberate no-op: we want the conflict handling, not a change.
+ * DO UPDATE, not DO NOTHING: on conflict it waits for the in-flight winner and
+ * returns the committed row. DO NOTHING returns zero rows, and a follow-up
+ * SELECT cannot see an uncommitted row under READ COMMITTED -- the loser then
+ * either 500s or moves the money twice. The SET is a deliberate no-op.
  */
 const CLAIM_KEY_SQL = `
   INSERT INTO transfers (id, from_user, to_user, amount_paise,
@@ -55,10 +35,7 @@ const CLAIM_KEY_SQL = `
   RETURNING *
 `;
 
-/**
- * Get-or-create both wallets. Race-free because there is no window between
- * looking and inserting -- the conflict is resolved by the index itself.
- */
+/** Get-or-create with no SELECT-then-INSERT window; the index resolves the race. */
 const UPSERT_WALLETS_SQL = `
   INSERT INTO wallets (user_id) VALUES ($1), ($2)
   ON CONFLICT DO NOTHING
@@ -66,21 +43,10 @@ const UPSERT_WALLETS_SQL = `
 `;
 
 /**
- * Takes both wallet rows in a deterministic order, before either is modified.
- *
- * This is what makes bidirectional concurrency deadlock-free, and it is not
- * optional. Sorting the upsert above does not order anything: ON CONFLICT DO
- * NOTHING takes no lasting lock on a row that already exists, so without this
- * statement the lock order would be set by the debit and credit below -- which
- * is the transfer's direction. A->B would take A then B while B->A took B then
- * A, and the two would deadlock. A concurrency test proved exactly that before
- * this was added.
- *
- * ORDER BY is what carries the guarantee: rows are locked in the order the sort
- * emits them, so every transaction in the system queues on the same row first.
- *
- * Note this is lock ordering only -- it is not a read-then-write of the balance.
- * Affordability is still decided atomically by the conditional UPDATE below.
+ * Deterministic lock order, and not optional: DO NOTHING above takes no lasting
+ * lock on an existing row, so without this the order would be debit-then-credit
+ * -- the transfer's direction -- and A->B would deadlock against B->A. Ordering
+ * only; affordability is still decided by DEBIT_SQL.
  */
 const LOCK_WALLETS_SQL = `
   SELECT user_id FROM wallets
@@ -89,13 +55,7 @@ const LOCK_WALLETS_SQL = `
   FOR UPDATE
 `;
 
-/**
- * Conditional debit: affordability check and mutation in one statement against
- * the locked row. Zero rows affected means insufficient funds.
- *
- * There is deliberately no SELECT of the balance anywhere in this path --
- * read-then-write is exactly how concurrent transfers overdraw an account.
- */
+/** Check and mutation in one statement, so the balance cannot go stale between them. */
 const DEBIT_SQL = `
   UPDATE wallets SET balance_paise = balance_paise - $2
   WHERE user_id = $1 AND balance_paise >= $2
@@ -107,21 +67,16 @@ const CREDIT_SQL = `
   WHERE user_id = $1
 `;
 
-/** Two rows summing to zero, so SUM over the whole ledger is always zero. */
+/** Two rows summing to zero, so SUM over the ledger is always zero. */
 const LEDGER_SQL = `
   INSERT INTO ledger_entries (transfer_id, user_id, amount_paise)
   VALUES ($1, $2, $3), ($1, $4, $5)
 `;
 
 /**
- * Moves `amountPaise` from `fromUser` to `toUser`, creating either wallet if
- * absent, exactly once, and applying at most once per idempotency key.
- *
- * Returns the outcome rather than throwing for a business rejection, because an
- * insufficient-funds rejection must be COMMITTED before the caller turns it
- * into a 422. The HTTP layer maps outcome to status code.
- *
- * @returns {Promise<{outcome: string, transfer: object, balancePaise: number|null}>}
+ * Returns the outcome rather than throwing on rejection: an insufficient-funds
+ * rejection must COMMIT before the HTTP layer turns it into a 422, which is
+ * what makes it replayable.
  */
 export async function executeTransfer({
   fromUser,
@@ -145,11 +100,9 @@ export async function executeTransfer({
     ]);
     const claimMs = Math.round(Number(process.hrtime.bigint() - claimStartedAt) / 1e6);
 
-    // A different id came back: this key already belongs to another request.
+    // A different id means the key already belongs to another request.
     if (row.id !== ourId) {
-      // Same key, different intent. Refuse rather than guess which one was
-      // meant -- and note that no money has moved, since this is still the
-      // first statement of the transaction.
+      // Same key, different intent: refuse rather than guess. No money has moved.
       if (row.request_hash !== requestHash) {
         log().warn(
           {
@@ -164,9 +117,6 @@ export async function executeTransfer({
 
       metrics.idempotentReplays.inc();
 
-      // Whether we blocked on an in-flight winner or simply arrived late is
-      // decided by how old the winning row is. Both replay identically; the
-      // distinction is for the operator reading the logs.
       const winnerAgeMs = Date.now() - new Date(row.created_at).getTime();
       if (winnerAgeMs < CONCURRENT_WINDOW_MS) {
         metrics.raceLost.inc({ kind: 'idempotency_key' });
@@ -175,9 +125,7 @@ export async function executeTransfer({
             event: 'transfer.race_lost',
             transfer_id: row.id,
             status: row.status,
-            // Time spent waiting on the winner's row lock: evidence that this
-            // request genuinely blocked rather than merely arriving second.
-            blocked_ms: claimMs,
+            blocked_ms: claimMs, // time spent waiting on the winner's row lock
             winner_age_ms: winnerAgeMs,
           },
           'lost the idempotency race, replaying the winner outcome',
@@ -189,26 +137,16 @@ export async function executeTransfer({
         'replayed a recorded outcome without moving money',
       );
 
-      return {
-        outcome: OUTCOME.REPLAYED,
-        transfer: row,
-        balancePaise: row.from_balance_after,
-      };
+      return { outcome: OUTCOME.REPLAYED, transfer: row, balancePaise: row.from_balance_after };
     }
 
     const [first, second] = [fromUser, toUser].sort();
     const upserted = await client.query(UPSERT_WALLETS_SQL, [first, second]);
     const created = upserted.rows.map((r) => r.user_id);
 
-    // Both rows now exist -- either we just created them, or the upsert waited
-    // for whoever did and skipped. Lock them in sorted order before touching a
-    // balance, so every transfer in the system queues on the same row first.
     const locked = await client.query(LOCK_WALLETS_SQL, [first, second]);
     if (locked.rowCount !== 2) {
-      // Unreachable: the upsert guarantees both rows exist and committed before
-      // this statement's snapshot. Treated as a transient fault rather than
-      // ignored, because proceeding would mean moving money with one row
-      // unlocked.
+      // Unreachable, but proceeding would mean moving money with a row unlocked.
       throw Object.assign(new Error('wallet rows vanished between upsert and lock'), {
         code: '40001',
       });
@@ -217,23 +155,25 @@ export async function executeTransfer({
     if (created.length > 0) {
       metrics.walletsCreated.inc({ via }, created.length);
     }
-    const alreadyExisted = [first, second].filter((u) => !created.includes(u));
     log().info(
-      { event: 'wallet.getorcreate', created, already_existed: alreadyExisted },
+      {
+        event: 'wallet.getorcreate',
+        created,
+        already_existed: [first, second].filter((u) => !created.includes(u)),
+      },
       'ensured both wallets exist',
     );
 
     const debit = await client.query(DEBIT_SQL, [fromUser, amountPaise]);
 
     if (debit.rowCount === 0) {
-      // Rejection is recorded and COMMITTED, so replaying this key returns this
-      // same rejection forever -- one key names one attempt with one answer.
-      await client.query(
-        'UPDATE transfers SET status = $2, reason = $3 WHERE id = $1',
-        [ourId, TRANSFER_STATUS.REJECTED, REJECT_REASON.INSUFFICIENT_FUNDS],
-      );
-      // Read only for the error detail and the log; the decision was already
-      // made atomically by the UPDATE above.
+      // Committed, not rolled back, so this key replays this rejection forever.
+      await client.query('UPDATE transfers SET status = $2, reason = $3 WHERE id = $1', [
+        ourId,
+        TRANSFER_STATUS.REJECTED,
+        REJECT_REASON.INSUFFICIENT_FUNDS,
+      ]);
+      // For the error detail only; the decision was made atomically above.
       const { rows: [wallet] } = await client.query(
         'SELECT balance_paise FROM wallets WHERE user_id = $1',
         [fromUser],
@@ -287,21 +227,13 @@ export async function executeTransfer({
 
     return {
       outcome: OUTCOME.APPLIED,
-      transfer: {
-        ...row,
-        status: TRANSFER_STATUS.APPLIED,
-        from_balance_after: newBalance,
-      },
+      transfer: { ...row, status: TRANSFER_STATUS.APPLIED, from_balance_after: newBalance },
       balancePaise: newBalance,
     };
   });
 }
 
-/**
- * Reads a transfer, but only for a participant. A non-participant gets the same
- * answer as a caller asking about an id that does not exist, so the endpoint
- * cannot be used to discover which ids are real.
- */
+/** Non-participants get null, so the endpoint cannot reveal which ids exist. */
 export async function findTransferForParticipant(transferId, callerId) {
   const { rows } = await withTransaction(async (client) =>
     client.query(

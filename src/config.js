@@ -1,9 +1,7 @@
 /**
- * 12-factor configuration.
- *
- * Every setting comes from the environment. Validation happens once at boot and
- * throws with the complete list of problems, so a misconfigured deploy fails
- * immediately and loudly rather than at the first request that needs the value.
+ * 12-factor configuration. Validated once at boot, reporting every problem
+ * together, so a misconfigured deploy fails loudly rather than at the first
+ * request that needs the value.
  */
 import { TREASURY_SEED_PAISE } from './constants.js';
 
@@ -44,10 +42,8 @@ export function loadConfig(env = process.env) {
   const isProduction = nodeEnv === 'production';
 
   const jwtSecret = collectString(env, 'JWT_SECRET', errors, { required: true });
-  // A short secret is a real vulnerability, not a style issue: HS256 with a
-  // guessable secret means anyone can mint a token for any user and move their
-  // money. Enforced hard in production, warned about elsewhere so local dev and
-  // CI stay frictionless.
+  // Not a style issue: HS256 with a guessable secret means anyone can mint a
+  // token for any user and move their money.
   if (jwtSecret && jwtSecret.length < 32 && isProduction) {
     errors.push('JWT_SECRET must be at least 32 characters in production');
   }
@@ -62,9 +58,8 @@ export function loadConfig(env = process.env) {
       connectionString: collectString(env, 'DATABASE_URL', errors, { required: true }),
       ssl: collectBool(env, 'DATABASE_SSL', errors, { fallback: false }),
       poolMax: collectInt(env, 'DB_POOL_MAX', errors, { fallback: 10, min: 1, max: 100 }),
-      // Bounded so a slow or wedged database surfaces as a fast 503 rather than
-      // a hanging request. Applied per transaction with SET LOCAL, because a
-      // pooled connection cannot be assumed to carry session state.
+      // Bounded so a wedged database surfaces as a fast 503, not a hang.
+      // Applied per transaction with SET LOCAL (the connection may be pooled).
       statementTimeoutMs: collectInt(env, 'DB_STATEMENT_TIMEOUT_MS', errors, {
         fallback: 3000, min: 100, max: 60_000,
       }),
@@ -84,8 +79,8 @@ export function loadConfig(env = process.env) {
       }),
     },
 
-    // Demo affordances, both default-off so that forgetting to set them cannot
-    // accidentally expose a token mint or a money faucet.
+    // Default-off, so forgetting to set them cannot expose a token mint or a
+    // money faucet.
     demo: {
       tokenEndpointEnabled: collectBool(env, 'DEV_TOKEN_ENABLED', errors, { fallback: false }),
       faucetEnabled: collectBool(env, 'FAUCET_ENABLED', errors, { fallback: false }),
@@ -105,8 +100,7 @@ export function loadConfig(env = process.env) {
     throw new Error(`Invalid configuration:\n  - ${errors.join('\n  - ')}`);
   }
 
-  // Deep-freeze the two levels we actually have, so a stray assignment at
-  // runtime fails instead of silently changing behaviour.
+  // So a stray runtime assignment fails instead of silently changing behaviour.
   for (const value of Object.values(config)) {
     if (value && typeof value === 'object') Object.freeze(value);
   }
@@ -115,10 +109,7 @@ export function loadConfig(env = process.env) {
 
 let cached;
 
-/**
- * Memoised accessor. Tests call loadConfig() directly with a synthetic
- * environment; the application uses this.
- */
+/** Memoised. Tests call loadConfig() directly with a synthetic environment. */
 export function getConfig(env = process.env) {
   cached ??= loadConfig(env);
   return cached;

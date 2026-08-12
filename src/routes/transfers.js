@@ -14,8 +14,7 @@ import { asyncHandler } from './async-handler.js';
 
 export const transfersRouter = Router();
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 transfersRouter.post(
   '/',
@@ -27,12 +26,10 @@ transfersRouter.post(
     const amountPaise = assertAmountPaise(req.body.amount_paise);
     const idempotencyKey = assertIdempotencyKey(req.body.idempotency_key);
 
-    // The sender is the token's subject. Any from_user in the body is ignored
-    // outright -- it is not read, so it cannot be honoured.
+    // The sender is the token subject. Any from_user in the body is not read.
     const fromUser = req.caller;
 
-    // Checked before opening a transaction, so a malformed request never
-    // consumes an idempotency key. The table also forbids it, as a backstop.
+    // Before any transaction opens, so a malformed request consumes no key.
     if (toUser === fromUser) throw selfTransferNotAllowed();
 
     const result = await executeTransfer({
@@ -43,8 +40,7 @@ transfersRouter.post(
       requestHash: computeRequestHash({ toUser, amountPaise }),
     });
 
-    // A rejection has already been committed by this point, which is what makes
-    // it replayable. Turning it into a 422 is the last step, not the first.
+    // Already committed by now, which is what makes the rejection replayable.
     if (result.transfer.status === TRANSFER_STATUS.REJECTED) {
       throw insufficientFunds({
         transfer_id: result.transfer.id,
@@ -53,9 +49,8 @@ transfersRouter.post(
       });
     }
 
-    // A replay returns the balance as it was when the transfer was originally
-    // applied, not the balance now. That is the point: the response is the
-    // original outcome, reproduced exactly.
+    // On a replay this is the balance as it was when the transfer was applied,
+    // not the balance now: the response reproduces the original outcome.
     res.status(201).json({
       transfer_id: result.transfer.id,
       new_balance: result.balancePaise,
@@ -67,12 +62,10 @@ transfersRouter.get(
   '/:id',
   requireAuth,
   asyncHandler(async (req, res) => {
-    // A malformed id is answered like an unknown one, rather than reaching the
-    // database and failing on a cast.
+    // Answered like an unknown id rather than reaching the database and failing
+    // on a cast.
     if (!UUID_PATTERN.test(req.params.id)) throw notFound();
 
-    // Returns null both for ids that do not exist and for transfers the caller
-    // is not part of, so a non-participant cannot tell the two apart.
     const transfer = await findTransferForParticipant(req.params.id, req.caller);
     if (!transfer) throw notFound();
 

@@ -111,17 +111,15 @@ The failure modes aren't symmetric. An unavailable wallet is a support ticket; a
 
 ## AI usage
 
-Claude Code (Opus) wrote most of the code; I directed the engineering decisions and the review.
+Claude Code wrote most of the code; I directed the engineering decisions and reviewed the output.
 
-**Directed:** the stack (plain JS, Express, raw `pg` — the concurrency control is the substance and belongs visible in the SQL); deployment targets; keeping the surface minimal (I cut proposed extras more than once); treasury-based money supply rather than seeding wallets, because only the former keeps conservation globally true; durable rejections; small single-purpose commits.
+**I directed:** the stack (plain JS, raw `pg` — no ORM, since the concurrency control is the substance and belongs visible in the SQL); deployment targets; keeping the surface minimal; treasury-based money supply rather than seeded wallets, because only the former keeps conservation globally true; durable rejections.
 
-**Decided after being shown options:** 422 over 402/409; 404 over 403 for non-participants; keys retained rather than expired; Render's health check on `/healthz`.
+**I decided from options offered:** 422 over 402/409; 404 over 403 for non-participants; no key expiry; health check on `/healthz` not `/readyz`.
 
-**Model's, reviewed and kept:** the specific SQL shapes and where each `ON CONFLICT` variant belongs; `xmax = 0` to distinguish insert from conflict in one round trip; `SET LOCAL` over session settings; `AsyncLocalStorage` correlation ids; the `@`-prefixed unaddressable treasury.
+**The model decided, I kept:** the specific `ON CONFLICT` variants and where each belongs; `xmax = 0`; `SET LOCAL` over session settings; `AsyncLocalStorage` correlation ids; the unaddressable `@treasury` id.
 
-**What testing changed:** two things we both had wrong. The `numeric`-as-string bug that made the conservation endpoint report a balanced ledger as unbalanced, and the lock-ordering claim — the design asserted sorting the upsert prevented deadlock, and a 40-request bidirectional test produced 503s and a 500 over 14.2s. I'd flagged that mechanism as the thing to verify empirically rather than argue about, which is why the test existed. The design doc was corrected in place with the measurement recorded, not quietly edited to match.
-
-Honestly: the model was fast and mostly right about the SQL, and confidently wrong about one concurrency property. The tests settled it.
+**Testing overruled both of us twice:** the `numeric`-as-string bug, and the lock-ordering claim — the design asserted sorting the upsert prevented deadlock, and a bidirectional test disproved it in 14.2s of 503s. I had flagged that mechanism as one to verify empirically rather than argue about, which is why the test existed.
 
 ## Cost
 

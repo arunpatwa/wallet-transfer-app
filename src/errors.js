@@ -1,10 +1,6 @@
 /**
- * Error taxonomy.
- *
- * Every failure a client can cause maps to exactly one code, and the code is
- * stable and machine-readable so a client can branch on it without parsing
- * prose. Anything not represented here is a bug in this service and becomes a
- * 500 with no detail leaked.
+ * Error taxonomy. Every client-caused failure maps to one stable code so a
+ * client can branch without parsing prose; anything else becomes an opaque 500.
  */
 
 export const ERROR_CODES = Object.freeze({
@@ -21,12 +17,6 @@ export const ERROR_CODES = Object.freeze({
 });
 
 export class AppError extends Error {
-  /**
-   * @param {number} httpStatus
-   * @param {string} code      one of ERROR_CODES
-   * @param {string} message   safe to return to the caller
-   * @param {object} [details] extra safe-to-expose context
-   */
   constructor(httpStatus, code, message, details) {
     super(message);
     this.name = 'AppError';
@@ -43,38 +33,22 @@ export class AppError extends Error {
 export const invalidRequest = (message, details) =>
   new AppError(400, ERROR_CODES.INVALID_REQUEST, message, details);
 
-/**
- * The message is deliberately uniform regardless of whether the token was
- * absent, malformed, expired or forged. The specific reason is logged, never
- * returned -- telling a caller which part of their forgery failed helps only
- * the forger.
- */
+/** Uniform whether the token was absent, expired or forged: the specific reason
+ *  is logged, never returned, since it helps only a forger. */
 export const unauthenticated = (message = 'A valid bearer token is required') =>
   new AppError(401, ERROR_CODES.UNAUTHENTICATED, message);
 
-/**
- * Used both for genuinely unknown ids and for transfers the caller is not a
- * participant in. A 403 would confirm the id exists, which is information a
- * non-participant should not get.
- */
+/** Also used for transfers the caller isn't party to: a 403 would confirm the
+ *  id exists. */
 export const notFound = (message = 'Not found') =>
   new AppError(404, ERROR_CODES.NOT_FOUND, message);
 
-/**
- * The path exists but does not accept this method.
- *
- * Distinguished from 404 because they answer different questions: 404 says the
- * resource is not here, 405 says it is here and you asked for it wrongly.
- * Collapsing them sends someone hunting for a typo in a URL that was correct --
- * which is exactly what a browser GET to a POST-only endpoint looks like.
- */
+/** Distinct from 404: "not here" and "here but asked for wrongly" are different
+ *  answers, and a browser GET to a POST-only route is the common case. */
 export const methodNotAllowed = (allowed) =>
-  new AppError(
-    405,
-    ERROR_CODES.METHOD_NOT_ALLOWED,
-    `This endpoint accepts ${allowed.join(', ')}`,
-    { allowed },
-  );
+  new AppError(405, ERROR_CODES.METHOD_NOT_ALLOWED, `This endpoint accepts ${allowed.join(', ')}`, {
+    allowed,
+  });
 
 export const idempotencyKeyReuse = (details) =>
   new AppError(
@@ -84,12 +58,9 @@ export const idempotencyKeyReuse = (details) =>
     details,
   );
 
-/**
- * 422 rather than 400: the request is well-formed, authenticated and
- * authorized. Rather than 402, which is effectively reserved and means "pay the
- * service". Rather than 409, which is kept for key reuse so a client can branch
- * on status alone -- 409 means fix your key, 422 means fund the wallet.
- */
+/** 422 not 400 (the request is well-formed and authorized), not 402 (reserved,
+ *  means "pay the service"), not 409 (kept for key reuse so clients can branch
+ *  on status alone: 409 means fix your key, 422 means fund the wallet). */
 export const insufficientFunds = (details) =>
   new AppError(422, ERROR_CODES.INSUFFICIENT_FUNDS, 'Insufficient funds', details);
 
@@ -100,12 +71,8 @@ export const selfTransferNotAllowed = () =>
     'A transfer must have a different sender and recipient',
   );
 
-/**
- * Fail closed. Returned when the datastore is unreachable or too slow to
- * complete within the configured bounds. The caller may safely retry with the
- * same idempotency key, so refusing costs them only a retry -- whereas
- * accepting a transfer we cannot durably record is how money gets created.
- */
+/** Fail closed. The caller may retry with the same key, so refusing costs a
+ *  retry -- where accepting what we cannot durably record creates money. */
 export const databaseUnavailable = () =>
   new AppError(
     503,
@@ -124,27 +91,21 @@ const PG = Object.freeze({
   FOREIGN_KEY_VIOLATION: '23503',
   SERIALIZATION_FAILURE: '40001',
   DEADLOCK_DETECTED: '40P01',
-  QUERY_CANCELED: '57014', // statement_timeout fired
-  LOCK_NOT_AVAILABLE: '55P03', // lock_timeout fired
+  QUERY_CANCELED: '57014', // statement_timeout
+  LOCK_NOT_AVAILABLE: '55P03', // lock_timeout
   TOO_MANY_CONNECTIONS: '53300',
   ADMIN_SHUTDOWN: '57P01',
   CANNOT_CONNECT_NOW: '57P03',
 });
 
-/**
- * Errors worth retrying: the transaction failed for a reason that is not the
- * caller's fault and may not recur. Sorted wallet access should mean deadlocks
- * never happen, so this is defence in depth rather than the mechanism.
- */
+/** Sorted wallet access should make these unreachable; retrying is defence in
+ *  depth, and a firing retry is worth a metric. */
 export function isRetryableDbError(err) {
   return err?.code === PG.SERIALIZATION_FAILURE || err?.code === PG.DEADLOCK_DETECTED;
 }
 
-/**
- * Errors that mean the datastore is unavailable rather than the request being
- * wrong. `pg` surfaces socket-level failures without a SQLSTATE, hence the
- * Node error codes.
- */
+/** The datastore is unavailable rather than the request being wrong. Socket
+ *  failures arrive without a SQLSTATE, hence the Node codes. */
 export function isUnavailableDbError(err) {
   if (!err) return false;
   if (
@@ -157,7 +118,6 @@ export function isUnavailableDbError(err) {
   ) {
     return true;
   }
-  // Socket-level and pool-level failures.
   return (
     err.code === 'ECONNREFUSED' ||
     err.code === 'ENOTFOUND' ||
@@ -168,23 +128,12 @@ export function isUnavailableDbError(err) {
   );
 }
 
-/**
- * True when the non-negative-balance backstop fired. Reaching this means the
- * conditional debit let an overdraft through, which is an invariant breach and
- * a bug -- but no money moved, because the transaction aborted. Callers should
- * log it loudly and still answer the client truthfully with 422.
- */
+/** The non-negative-balance backstop fired: an invariant breach and a bug, but
+ *  no money moved, so answer the client truthfully with 422 and log loudly. */
 export function isBalanceInvariantViolation(err) {
-  return (
-    err?.code === PG.CHECK_VIOLATION && err?.constraint === 'wallets_balance_non_negative'
-  );
+  return err?.code === PG.CHECK_VIOLATION && err?.constraint === 'wallets_balance_non_negative';
 }
 
-/**
- * Last-resort mapping for anything reaching the HTTP layer. Unrecognised errors
- * become an opaque 500: never leak a driver message or a SQL fragment to a
- * caller.
- */
 export function toAppError(err) {
   if (err instanceof AppError) return err;
   if (isUnavailableDbError(err)) return databaseUnavailable();

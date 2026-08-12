@@ -1,10 +1,6 @@
 /**
- * Connection pool and the transaction helper every write goes through.
- *
- * The helper exists so that no route can accidentally run a multi-statement
- * money operation outside a transaction: there is one way to get a client, and
- * it already has BEGIN, the timeouts, ROLLBACK-on-throw and the retry policy
- * attached.
+ * The pool and the transaction helper every write goes through, so no route can
+ * run a multi-statement money operation outside a transaction.
  */
 import pg from 'pg';
 import { getConfig } from '../config.js';
@@ -15,13 +11,9 @@ import { databaseUnavailable, isRetryableDbError } from '../errors.js';
 const config = getConfig();
 
 /**
- * Read BIGINT (OID 20) as a JavaScript number rather than the string `pg`
- * returns by default.
- *
- * Safe because every BIGINT in this schema is bounded well below
- * Number.MAX_SAFE_INTEGER: the entire money supply is 1e14 paise and a single
- * transfer is capped at 1e12 (see constants.js). Without this, balances would
- * arrive as strings and arithmetic on them would silently concatenate.
+ * BIGINT as a number, not the string pg returns by default -- otherwise
+ * balances arrive as strings and arithmetic silently concatenates. Safe because
+ * the whole supply is 1e14 and a transfer is capped at 1e12 (see constants.js).
  */
 pg.types.setTypeParser(pg.types.builtins.INT8, (value) =>
   value === null ? null : Number(value),
@@ -29,9 +21,8 @@ pg.types.setTypeParser(pg.types.builtins.INT8, (value) =>
 
 export const pool = new pg.Pool({
   connectionString: config.db.connectionString,
-  // Managed providers terminate TLS with a chain the container has no root for.
-  // Encryption is required; chain verification is not performed. Stated here
-  // rather than left implicit.
+  // Encryption required; chain not verified, because managed providers present
+  // a chain the container carries no root for.
   ssl: config.db.ssl ? { rejectUnauthorized: false } : false,
   max: config.db.poolMax,
   connectionTimeoutMillis: config.db.connectTimeoutMs,
@@ -39,8 +30,7 @@ export const pool = new pg.Pool({
   application_name: 'wallet-transfer-app',
 });
 
-// An idle client erroring (provider restart, pooler recycling a connection) must
-// not become an unhandled 'error' event and kill the process.
+// An idle client erroring must not become an unhandled event and kill the process.
 pool.on('error', (err) => {
   log().error({ event: 'db.pool_error', error: err.message }, 'idle client error');
 });
@@ -48,20 +38,12 @@ pool.on('error', (err) => {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Runs `fn` inside a single transaction.
+ * Runs `fn` in one transaction.
  *
- * Timeouts are applied with SET LOCAL rather than as pool-level session
- * settings, because the connection may be routed through a pooler that does not
- * preserve session state between checkouts. SET LOCAL is scoped to this
- * transaction and unwinds with it.
- *
- * The values are interpolated rather than bound because SET LOCAL does not
- * accept bind parameters. They are integers validated at config load, so this
- * cannot carry injected SQL.
- *
- * Retries apply only to serialization failures and deadlocks. Sorted wallet
- * access should make deadlocks impossible, so a retry firing is a signal worth
- * a metric, not a routine occurrence.
+ * Timeouts use SET LOCAL rather than session settings, because the connection
+ * may be pooled and must not be assumed to carry session state. The values are
+ * interpolated because SET LOCAL takes no bind parameters; they are integers
+ * validated at config load, so no SQL can ride in on them.
  */
 export async function withTransaction(fn, { attempts = 3 } = {}) {
   let lastError;
@@ -71,7 +53,6 @@ export async function withTransaction(fn, { attempts = 3 } = {}) {
     try {
       client = await pool.connect();
     } catch (err) {
-      // No connection available within the bound: fail closed rather than queue.
       log().error({ event: 'db.connect_failed', error: err.message }, 'cannot acquire connection');
       throw databaseUnavailable();
     }
@@ -86,8 +67,6 @@ export async function withTransaction(fn, { attempts = 3 } = {}) {
       await client.query('COMMIT');
       return result;
     } catch (err) {
-      // Best effort: if the connection is already gone the ROLLBACK will fail
-      // too, and the server has aborted the transaction regardless.
       await client.query('ROLLBACK').catch(() => {});
 
       if (isRetryableDbError(err) && attempt < attempts) {
@@ -97,7 +76,7 @@ export async function withTransaction(fn, { attempts = 3 } = {}) {
           { event: 'db.transaction_retry', sqlstate: err.code, attempt },
           'retrying transaction',
         );
-        // Jittered backoff so retrying contenders do not re-collide in lockstep.
+        // Jittered, so retrying contenders do not re-collide in lockstep.
         await sleep(Math.floor(Math.random() * 20) + attempt * 10);
         continue;
       }
@@ -110,10 +89,8 @@ export async function withTransaction(fn, { attempts = 3 } = {}) {
   throw lastError;
 }
 
-/**
- * Readiness probe. Bounded independently of statement_timeout so that a wedged
- * database surfaces as "not ready" quickly rather than holding the probe open.
- */
+/** Bounded independently of statement_timeout, so a wedged database surfaces as
+ *  "not ready" quickly rather than holding the probe open. */
 export async function checkDatastore({ timeoutMs = 1500 } = {}) {
   const startedAt = process.hrtime.bigint();
   const elapsedMs = () => Number(process.hrtime.bigint() - startedAt) / 1e6;
@@ -122,7 +99,6 @@ export async function checkDatastore({ timeoutMs = 1500 } = {}) {
     await Promise.race([
       pool.query('SELECT 1'),
       new Promise((_, reject) => {
-        // unref so a pending probe timer can never hold the process open.
         setTimeout(() => reject(new Error('readiness probe timed out')), timeoutMs).unref();
       }),
     ]);

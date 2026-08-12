@@ -1,16 +1,13 @@
 /**
- * Request validation.
- *
- * Validation happens at the edge, before any transaction opens, so a malformed
- * request never consumes an idempotency key. That is a deliberate distinction:
- * a malformed request is not an outcome worth remembering, whereas a rejection
- * for insufficient funds is (see the transfer service).
+ * Edge validation. Runs before any transaction opens, so a malformed request
+ * never consumes an idempotency key -- unlike an insufficient-funds rejection,
+ * which is an outcome worth remembering.
  */
 import { createHash } from 'node:crypto';
 import { MAX_AMOUNT_PAISE, USER_ID_PATTERN } from './constants.js';
 import { invalidRequest } from './errors.js';
 
-/** Printable ASCII, no control characters, so a key cannot corrupt a log line. */
+/** Printable ASCII, so a key cannot corrupt a log line. */
 const IDEMPOTENCY_KEY_PATTERN = /^[\x20-\x7E]{1,255}$/;
 
 export function assertUserId(value, field) {
@@ -18,8 +15,6 @@ export function assertUserId(value, field) {
     throw invalidRequest(`${field} must be a string`, { field });
   }
   if (!USER_ID_PATTERN.test(value)) {
-    // The pattern excludes '@', which is what makes the treasury account
-    // unaddressable: no well-formed request can name it.
     throw invalidRequest(
       `${field} must be 3-64 characters of letters, digits, or _ . : -`,
       { field },
@@ -29,12 +24,9 @@ export function assertUserId(value, field) {
 }
 
 /**
- * Money is an integer number of paise, always.
- *
- * Strings are rejected rather than coerced: accepting "100" would invite
- * accepting "100.5", and a service that silently rounds money is worse than one
- * that refuses ambiguous input. A JSON float such as 10.5 fails Number.isInteger
- * and is refused rather than truncated.
+ * Strings are refused rather than coerced: accepting "100" invites accepting
+ * "100.5", and a service that silently rounds money is worse than one that
+ * refuses ambiguous input.
  */
 export function assertAmountPaise(value, field = 'amount_paise') {
   if (typeof value !== 'number') {
@@ -57,31 +49,22 @@ export function assertIdempotencyKey(value, field = 'idempotency_key') {
     throw invalidRequest(`${field} must be a string`, { field });
   }
   if (!IDEMPOTENCY_KEY_PATTERN.test(value)) {
-    throw invalidRequest(
-      `${field} must be 1-255 printable ASCII characters`,
-      { field },
-    );
+    throw invalidRequest(`${field} must be 1-255 printable ASCII characters`, { field });
   }
   return value;
 }
 
 /**
- * Fingerprint of the request's *intent*, used to tell an honest retry from the
- * same key reused for something else.
- *
- * Field order is fixed here rather than derived from the incoming object, which
- * is what makes it canonical: two requests with the same meaning hash
- * identically regardless of JSON key order or whitespace.
- *
- * The idempotency key itself is excluded -- it is the lookup key, not part of
- * the intent being fingerprinted.
+ * Fingerprints the request's intent, to tell an honest retry from the same key
+ * reused for something else. Field order is fixed here rather than taken from
+ * the incoming object, which is what makes it canonical. The key itself is
+ * excluded -- it is the lookup, not the intent.
  */
 export function computeRequestHash({ toUser, amountPaise }) {
   const canonical = JSON.stringify({ amount_paise: amountPaise, to_user: toUser });
   return createHash('sha256').update(canonical).digest('hex');
 }
 
-/** Rejects a non-object body early so field access below is safe. */
 export function assertObjectBody(body) {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     throw invalidRequest('Request body must be a JSON object');
