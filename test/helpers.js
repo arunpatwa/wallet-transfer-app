@@ -108,9 +108,9 @@ export async function walletRowCount(userId) {
 
 export async function invariants() {
   const { rows } = await pool.query(`
-    SELECT (SELECT coalesce(sum(balance_paise), 0) FROM wallets)        AS total_balance_paise,
-           (SELECT coalesce(sum(amount_paise), 0)  FROM ledger_entries) AS ledger_sum_paise,
-           (SELECT count(*)::int                   FROM wallets)        AS wallet_count
+    SELECT (SELECT coalesce(sum(balance_paise), 0)::bigint FROM wallets)        AS total_balance_paise,
+           (SELECT coalesce(sum(amount_paise), 0)::bigint  FROM ledger_entries) AS ledger_sum_paise,
+           (SELECT count(*)::int                           FROM wallets)        AS wallet_count
   `);
   return rows[0];
 }

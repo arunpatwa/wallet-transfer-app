@@ -64,11 +64,15 @@ export async function findWallet(userId) {
 export async function readInvariants() {
   const { rows: [row] } = await withTransaction(async (client) =>
     client.query(`
+      -- The ::bigint casts are load-bearing. sum() over a bigint column returns
+      -- numeric, not bigint, so it falls outside the INT8 type parser and would
+      -- arrive as a string -- making ledger_sum_paise === 0 false for a
+      -- perfectly balanced ledger.
       SELECT
-        (SELECT count(*)                        FROM wallets)        AS wallet_count,
-        (SELECT coalesce(sum(balance_paise), 0) FROM wallets)        AS total_balance_paise,
-        (SELECT coalesce(sum(amount_paise), 0)  FROM ledger_entries) AS ledger_sum_paise,
-        (SELECT count(*)                        FROM ledger_entries) AS ledger_entry_count,
+        (SELECT count(*)                                  FROM wallets)        AS wallet_count,
+        (SELECT coalesce(sum(balance_paise), 0)::bigint   FROM wallets)        AS total_balance_paise,
+        (SELECT coalesce(sum(amount_paise), 0)::bigint    FROM ledger_entries) AS ledger_sum_paise,
+        (SELECT count(*)                                  FROM ledger_entries) AS ledger_entry_count,
         (SELECT count(*) FROM transfers WHERE status = 'applied')    AS transfers_applied,
         (SELECT count(*) FROM transfers WHERE status = 'rejected')   AS transfers_rejected
     `),
