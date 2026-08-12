@@ -11,6 +11,7 @@ export const ERROR_CODES = Object.freeze({
   INVALID_REQUEST: 'invalid_request',
   UNAUTHENTICATED: 'unauthenticated',
   NOT_FOUND: 'not_found',
+  METHOD_NOT_ALLOWED: 'method_not_allowed',
   IDEMPOTENCY_KEY_REUSE: 'idempotency_key_reuse',
   INSUFFICIENT_FUNDS: 'insufficient_funds',
   SELF_TRANSFER_NOT_ALLOWED: 'self_transfer_not_allowed',
@@ -58,6 +59,22 @@ export const unauthenticated = (message = 'A valid bearer token is required') =>
  */
 export const notFound = (message = 'Not found') =>
   new AppError(404, ERROR_CODES.NOT_FOUND, message);
+
+/**
+ * The path exists but does not accept this method.
+ *
+ * Distinguished from 404 because they answer different questions: 404 says the
+ * resource is not here, 405 says it is here and you asked for it wrongly.
+ * Collapsing them sends someone hunting for a typo in a URL that was correct --
+ * which is exactly what a browser GET to a POST-only endpoint looks like.
+ */
+export const methodNotAllowed = (allowed) =>
+  new AppError(
+    405,
+    ERROR_CODES.METHOD_NOT_ALLOWED,
+    `This endpoint accepts ${allowed.join(', ')}`,
+    { allowed },
+  );
 
 export const idempotencyKeyReuse = (details) =>
   new AppError(

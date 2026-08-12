@@ -1,5 +1,11 @@
 import express from 'express';
-import { ERROR_CODES, invalidRequest, notFound, toAppError } from './errors.js';
+import {
+  ERROR_CODES,
+  invalidRequest,
+  methodNotAllowed,
+  notFound,
+  toAppError,
+} from './errors.js';
 import { log, newCorrelationId, withRequestContext } from './logger.js';
 import * as metrics from './metrics.js';
 import { accountsRouter } from './routes/accounts.js';
@@ -13,6 +19,23 @@ import { transfersRouter } from './routes/transfers.js';
  * than the raw path, so /transfers/<uuid> aggregates as /transfers/:id instead
  * of producing one time series per transfer.
  */
+/**
+ * The method each path accepts, used only to answer 405 instead of 404 when a
+ * path exists but the method is wrong. Kept deliberately small and explicit
+ * rather than introspected from the router: an accurate hand-written list is
+ * easier to verify than a clever derivation, and it is checked by a test.
+ */
+const KNOWN_ROUTES = [
+  { pattern: /^\/$/, methods: ['GET'] },
+  { pattern: /^\/(healthz|readyz|metrics|logs|invariants)$/, methods: ['GET'] },
+  { pattern: /^\/auth\/token$/, methods: ['POST'] },
+  { pattern: /^\/dev\/credit$/, methods: ['POST'] },
+  { pattern: /^\/accounts$/, methods: ['POST'] },
+  { pattern: /^\/accounts\/me$/, methods: ['GET'] },
+  { pattern: /^\/transfers$/, methods: ['POST'] },
+  { pattern: /^\/transfers\/[^/]+$/, methods: ['GET'] },
+];
+
 /**
  * Routes whose per-request log line is suppressed.
  *
@@ -109,7 +132,19 @@ export function createApp() {
   app.use('/accounts', accountsRouter);
   app.use('/transfers', transfersRouter);
 
-  app.use((_req, _res, next) => next(notFound('No such route')));
+  // Nothing matched. Before answering 404, check whether the path exists under a
+  // different method -- a browser hitting a POST-only endpoint is the common
+  // case, and telling someone "not found" about a URL they typed correctly
+  // sends them hunting for a typo that isn't there.
+  app.use((req, res, next) => {
+    const known = KNOWN_ROUTES.find((route) => route.pattern.test(req.path));
+    if (known && !known.methods.includes(req.method)) {
+      // RFC 9110 requires Allow on a 405.
+      res.set('Allow', known.methods.join(', '));
+      return next(methodNotAllowed(known.methods));
+    }
+    return next(notFound('No such route'));
+  });
 
   // Terminal error handler. Every failure leaves through here, so the response
   // shape is uniform and no driver detail escapes.
