@@ -58,15 +58,35 @@ const CLAIM_KEY_SQL = `
 /**
  * Get-or-create both wallets. Race-free because there is no window between
  * looking and inserting -- the conflict is resolved by the index itself.
- *
- * $1 and $2 are the two user ids sorted, which gives every caller in the system
- * the same row-lock acquisition order. Without that, A->B and B->A running
- * concurrently could each hold one row and wait for the other.
  */
 const UPSERT_WALLETS_SQL = `
   INSERT INTO wallets (user_id) VALUES ($1), ($2)
   ON CONFLICT DO NOTHING
   RETURNING user_id
+`;
+
+/**
+ * Takes both wallet rows in a deterministic order, before either is modified.
+ *
+ * This is what makes bidirectional concurrency deadlock-free, and it is not
+ * optional. Sorting the upsert above does not order anything: ON CONFLICT DO
+ * NOTHING takes no lasting lock on a row that already exists, so without this
+ * statement the lock order would be set by the debit and credit below -- which
+ * is the transfer's direction. A->B would take A then B while B->A took B then
+ * A, and the two would deadlock. A concurrency test proved exactly that before
+ * this was added.
+ *
+ * ORDER BY is what carries the guarantee: rows are locked in the order the sort
+ * emits them, so every transaction in the system queues on the same row first.
+ *
+ * Note this is lock ordering only -- it is not a read-then-write of the balance.
+ * Affordability is still decided atomically by the conditional UPDATE below.
+ */
+const LOCK_WALLETS_SQL = `
+  SELECT user_id FROM wallets
+  WHERE user_id IN ($1, $2)
+  ORDER BY user_id
+  FOR UPDATE
 `;
 
 /**
@@ -176,11 +196,23 @@ export async function executeTransfer({
       };
     }
 
-    // Sorted, so every transaction in the system takes these rows in the same
-    // order. This is what makes bidirectional concurrency deadlock-free.
     const [first, second] = [fromUser, toUser].sort();
     const upserted = await client.query(UPSERT_WALLETS_SQL, [first, second]);
     const created = upserted.rows.map((r) => r.user_id);
+
+    // Both rows now exist -- either we just created them, or the upsert waited
+    // for whoever did and skipped. Lock them in sorted order before touching a
+    // balance, so every transfer in the system queues on the same row first.
+    const locked = await client.query(LOCK_WALLETS_SQL, [first, second]);
+    if (locked.rowCount !== 2) {
+      // Unreachable: the upsert guarantees both rows exist and committed before
+      // this statement's snapshot. Treated as a transient fault rather than
+      // ignored, because proceeding would mean moving money with one row
+      // unlocked.
+      throw Object.assign(new Error('wallet rows vanished between upsert and lock'), {
+        code: '40001',
+      });
+    }
 
     if (created.length > 0) {
       metrics.walletsCreated.inc({ via }, created.length);
