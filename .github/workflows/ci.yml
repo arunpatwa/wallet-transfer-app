@@ -56,11 +56,22 @@ jobs:
       - name: Build image
         run: docker build -t wallet-transfer-app:ci .
 
+      # --entrypoint is required, not incidental. The image declares an
+      # ENTRYPOINT, so `docker run <image> whoami` appends whoami as an argument
+      # to the entrypoint rather than replacing the command -- the entrypoint
+      # then tries to migrate with no DATABASE_URL and exits 1. Overriding the
+      # entrypoint is what actually asks the question.
       - name: Verify it runs as a non-root user
         run: |
-          user=$(docker run --rm wallet-transfer-app:ci whoami)
+          user=$(docker run --rm --entrypoint whoami wallet-transfer-app:ci)
           echo "container user: $user"
           test "$user" = "node"
+
+      - name: Verify a HEALTHCHECK is declared
+        run: |
+          probe=$(docker inspect --format '{{json .Config.Healthcheck.Test}}' wallet-transfer-app:ci)
+          echo "healthcheck: $probe"
+          test "$probe" != "null"
 
       - name: Report image size
         run: docker image ls wallet-transfer-app:ci
