@@ -206,7 +206,10 @@ describe('idempotency under concurrency', () => {
 
     const replayed = await api('/transfers', { method: 'POST', token: sender.token, body });
     expect(replayed.status).toBe(422);
-    expect(await balanceOf(recipient)).toBeNull();
+    // The recipient's wallet does exist: get-or-create runs before the debit is
+    // attempted, so a refused transfer still leaves both wallets in place. What
+    // must not happen is money arriving.
+    expect(await balanceOf(recipient)).toBe(0);
   });
 });
 
