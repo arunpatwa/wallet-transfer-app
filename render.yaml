@@ -10,6 +10,12 @@ services:
     plan: free
     region: singapore
 
+    # Ship every push to main. Stated explicitly rather than relying on the
+    # platform default, so the deployed revision is always the one in the
+    # repository -- a blueprint service that silently stops tracking main is a
+    # deployment that quietly drifts from the code being reviewed.
+    autoDeploy: true
+
     # Liveness, not readiness. If this pointed at /readyz, a database outage
     # would fail the health check and Render would restart the service into a
     # crash loop -- while the correct behaviour during a database outage is to
