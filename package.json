@@ -1,0 +1,28 @@
+{
+  "name": "wallet-transfer-app",
+  "version": "1.0.0",
+  "description": "Wallet / peer-to-peer transfer service. Integer paise, race-free get-or-create, idempotent transfers.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "migrate": "node src/db/migrate.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "burst": "node scripts/burst.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1",
+    "pino": "^9.5.0",
+    "prom-client": "^15.1.3"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.8"
+  }
+}
