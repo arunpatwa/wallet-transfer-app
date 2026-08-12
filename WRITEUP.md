@@ -146,6 +146,7 @@ Worth being precise about the limit of that risk: the write path never trusts a 
 | `from_user` injected into body | Ignored; caller is the token subject |
 | Reading a stranger's transfer | 404 |
 | Malformed transfer id | 404, without reaching the database |
+| Right path, wrong method | 405 with an `Allow` header — distinct from 404, because "not here" and "here but asked for wrongly" are different answers, and a browser GET to a POST-only endpoint is the common case |
 | Treasury named as counterparty | 400 — outside the `user_id` grammar |
 | Refused transfer's recipient | Wallet exists at zero — get-or-create precedes the debit attempt |
 | Database unreachable | 503 on writes, `/readyz` 503, `/healthz` still 200 |

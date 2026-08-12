@@ -78,7 +78,8 @@ Two demo endpoints, each behind a default-off flag, exist so the gate runs as on
 |---|---|---|
 | 400 | `invalid_request` | Malformed body; amount non-integer, zero, negative, a string, or over cap; missing key; malformed user id |
 | 401 | `unauthenticated` | Token missing, malformed, expired, or badly signed |
-| 404 | `not_found` | Unknown transfer, or one the caller is not party to |
+| 404 | `not_found` | Unknown transfer, one the caller is not party to, or a path that does not exist |
+| 405 | `method_not_allowed` | The path exists but does not accept this method; carries an `Allow` header |
 | 409 | `idempotency_key_reuse` | Same key, different body |
 | 422 | `insufficient_funds` | Well-formed and authorized, unprocessable given the balance |
 | 422 | `self_transfer_not_allowed` | Recipient equals the caller |
