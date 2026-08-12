@@ -14,7 +14,7 @@ Every graded requirement, the mechanism that satisfies it, and the test that pro
 | Idempotent retry returns original outcome | `UNIQUE (from_user, idempotency_key)` written *inside* the money transaction, before the mutation | P2 (M concurrent identical) |
 | Same key + different body → 409 | `request_hash` (sha256 of canonical body) stored alongside the key and compared on replay | P3 |
 | Race-free get-or-create, never 2 rows, never a 500 | `INSERT … ON CONFLICT DO NOTHING` for wallets; `ON CONFLICT DO UPDATE` for the idempotency row so a loser blocks and then reads the committed winner | P1, P5 |
-| No deadlock under bidirectional load | Wallet rows always touched in sorted `user_id` order | P4 (N A→B and N B→A interleaved) |
+| No deadlock under bidirectional load | Sorted `SELECT … FOR UPDATE` taken before either balance moves | P4 (N A→B and N B→A interleaved) |
 | Authorization from token only | Identity read solely from verified JWT `sub`; `from_user` in a body is ignored | P7 |
 | Read only transfers you're party to | Participant check on `from_user`/`to_user`, else 404 | P7 |
 | Money as integer paise, never float | `BIGINT` columns; non-integer JSON numbers rejected at the edge | P8 |
@@ -97,10 +97,18 @@ RETURNING *;
 --        request_hash differs -> 409 idempotency_key_reuse
 --        otherwise            -> return the stored outcome verbatim, move no money
 
--- (2) Get-or-create both wallets. $lo/$hi are [from,to] sorted.
+-- (2) Get-or-create both wallets. No SELECT-then-INSERT window at all.
 INSERT INTO wallets (user_id) VALUES ($lo), ($hi)
 ON CONFLICT DO NOTHING
 RETURNING user_id;
+
+-- (2b) Take both rows in a deterministic order, before either is modified.
+--      $lo/$hi are [from,to] sorted; ORDER BY carries the guarantee.
+SELECT user_id FROM wallets
+WHERE user_id IN ($lo, $hi)
+ORDER BY user_id
+FOR UPDATE;
+-- Not optional, and not what this design originally assumed. See below.
 
 -- (3) Debit, conditionally. Zero rows means insufficient funds.
 UPDATE wallets SET balance_paise = balance_paise - $amt
@@ -121,7 +129,11 @@ Three primitives make this correct, and each replaces a heavier mechanism:
 
 **`ON CONFLICT DO UPDATE`, not `DO NOTHING`, on the idempotency row.** This is the crux. With `DO NOTHING`, a request that loses the race gets zero rows back, and the follow-up `SELECT` sees *nothing* — because under `READ COMMITTED` the winner's row is still uncommitted. That is precisely the classic find-or-create failure: the loser either 500s on a missing row or, worse, proceeds and moves the money a second time. `DO UPDATE` instead takes a row lock on the conflicting tuple and **blocks until the winner commits**, then returns the committed row. The loser wakes up, sees a `request_hash` and a terminal status, and replays the winner's outcome. One statement, no retry loop, no gap.
 
-**`INSERT … ON CONFLICT DO NOTHING` for wallets, in sorted order.** Get-or-create with no `SELECT`-then-`INSERT` window at all, so two concurrent first-transfers cannot both insert. `DO NOTHING` is right here (unlike the idempotency row) because we don't need to read the loser's row back — we only need the row to exist, and it does. Sorting `[from_user, to_user]` before insert gives every caller in the system the same lock acquisition order, so A→B and B→A running concurrently cannot deadlock.
+**`INSERT … ON CONFLICT DO NOTHING` for wallets.** Get-or-create with no `SELECT`-then-`INSERT` window at all, so two concurrent first-transfers cannot both insert. `DO NOTHING` is right here (unlike the idempotency row) because we don't need to read the loser's row back — we only need the row to exist, and it does.
+
+**A sorted `SELECT … FOR UPDATE` before either balance moves.** This design initially assumed that sorting the wallet *upsert* was enough to order locks, and that was wrong. `ON CONFLICT DO NOTHING` takes no lasting lock on a row that already exists, so for an established pair the upsert orders nothing — the lock order ends up being set by the debit and credit that follow, which is the transfer's *direction*. A→B took A then B while B→A took B then A, and they deadlocked.
+
+This was measured, not reasoned about: 40 opposite-direction transfers produced 503s and a 500 over 14.2 seconds. Adding the sorted `FOR UPDATE` brought the same test to 0.43 seconds. It is lock ordering only — affordability is still decided atomically by the conditional `UPDATE`, so no read-then-write window is introduced.
 
 **`UPDATE … WHERE balance_paise >= $amt`.** The read and the write are one atomic statement against the locked row, so the check cannot go stale between decision and mutation. There is no `SELECT balance` anywhere in the write path — that read-then-write pattern is the canonical overspend bug.
 
@@ -132,7 +144,7 @@ Three primitives make this correct, and each replaces a heavier mechanism:
 | Alternative | Why rejected |
 |---|---|
 | `SERIALIZABLE` isolation | Correct, but converts contention into serialization failures; a burst becomes a retry storm with a much worse tail. The conditional UPDATE already gives the needed atomicity at `READ COMMITTED`. |
-| `SELECT … FOR UPDATE` on both wallets | Still requires the identical sort-order discipline to avoid deadlock, adds a round trip, and buys nothing the conditional UPDATE doesn't already provide. |
+| `SELECT … FOR UPDATE` **as the affordability check** | Rejected in that role — reading a balance and then updating it is the canonical overspend bug. Note this is different from using `FOR UPDATE` purely to order locks, which the design does do and needs (see above); the point is that it must not be what decides whether the sender can afford the transfer. |
 | `pg_advisory_xact_lock` on the wallet pair | Serializes transfers that don't actually conflict, and adds a lock namespace to reason about. |
 | Redis / external distributed lock | A second system that can disagree with the source of truth about whether money moved. Lock expiry during a slow commit is a double-spend. |
 | Application mutex or single-writer queue | Evaporates the moment a second replica exists — and the deploy target runs replicas. |
