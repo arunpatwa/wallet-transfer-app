@@ -46,7 +46,7 @@ npm ci
 TEST_DATABASE_URL=postgres://user@host:5432/wallet_test npm test
 ```
 
-28 tests. The concurrency suite drives a real HTTP server with overlapping requests rather than calling services directly, because the bugs it exists to catch only appear when requests genuinely interleave. Conservation is asserted after **every** test, so no case can pass while quietly creating or destroying money.
+35 tests. The concurrency suite drives a real HTTP server with overlapping requests rather than calling services directly, because the bugs it exists to catch only appear when requests genuinely interleave. Conservation is asserted after **every** test, so no case can pass while quietly creating or destroying money.
 
 ## API
 
