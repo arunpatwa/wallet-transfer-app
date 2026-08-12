@@ -1,11 +1,11 @@
 # Wallet / P2P Transfer Service
 
-Users hold a balance in integer paise and transfer to each other. Money is never lost or created, a retried transfer never applies twice, and no one can move anyone else's money — including under a concurrent burst.
+Users hold a balance in integer paise and transfer to each other. Money is never lost or created, a retried transfer never applies twice, and no one can move anyone else's money, including under a concurrent burst.
 
-- **Live URL** — <https://wallet-transfer-app.onrender.com>
-- **Logs** — <https://wallet-transfer-app.onrender.com/logs> (public, no login) · **Dashboard** — <https://wallet-transfer-app.onrender.com/>
-- **Repo** — <https://github.com/arunpatwa/wallet-transfer-app>
-- **Design** — [plan.md](plan.md) · **Write-up** — [WRITEUP.md](WRITEUP.md) · **Deploy** — [DEPLOY.md](DEPLOY.md)
+- **Live URL**: <https://wallet-transfer-app.onrender.com>
+- **Logs**: <https://wallet-transfer-app.onrender.com/logs> (public, no login) · **Dashboard**: <https://wallet-transfer-app.onrender.com/>
+- **Repo**: <https://github.com/arunpatwa/wallet-transfer-app>
+- **Design**: [plan.md](plan.md) · **Write-up**: [WRITEUP.md](WRITEUP.md) · **Deploy**: [DEPLOY.md](DEPLOY.md)
 
 ## Run the correctness gate
 
@@ -50,7 +50,7 @@ TEST_DATABASE_URL=postgres://user@host:5432/wallet_test npm test
 
 ## API
 
-All endpoints except `/auth/token` and the operational ones require `Authorization: Bearer <jwt>`. **The caller is the token's subject and nothing else** — no header or body field is ever consulted for identity.
+All endpoints except `/auth/token` and the operational ones require `Authorization: Bearer <jwt>`. **The caller is the token's subject and nothing else**; no header or body field is ever consulted for identity.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -83,7 +83,7 @@ Two demo endpoints, each behind a default-off flag, exist so the gate runs as on
 | 409 | `idempotency_key_reuse` | Same key, different body |
 | 422 | `insufficient_funds` | Well-formed and authorized, unprocessable given the balance |
 | 422 | `self_transfer_not_allowed` | Recipient equals the caller |
-| 503 | `database_unavailable` | Datastore unreachable or too slow — fails closed |
+| 503 | `database_unavailable` | Datastore unreachable or too slow; fails closed |
 
 `422` rather than `402` (effectively reserved, means "pay the service") or `409` (kept for key reuse, so a client can branch on status alone: 409 means fix your key, 422 means fund the wallet).
 
@@ -123,7 +123,7 @@ curl -s $URL/invariants
 
 One `READ COMMITTED` transaction per transfer, no `SERIALIZABLE`, no external locks:
 
-1. **`INSERT … ON CONFLICT (from_user, idempotency_key) DO UPDATE`** claims the key as the transaction's first write. `DO UPDATE` rather than `DO NOTHING` is the crux: on conflict it waits for the in-flight winner and returns the winner's committed row. `DO NOTHING` returns zero rows, and a follow-up `SELECT` cannot see an uncommitted row under `READ COMMITTED` — the classic find-or-create failure that either 500s or double-spends.
+1. **`INSERT … ON CONFLICT (from_user, idempotency_key) DO UPDATE`** claims the key as the transaction's first write. `DO UPDATE` rather than `DO NOTHING` is the crux: on conflict it waits for the in-flight winner and returns the winner's committed row. `DO NOTHING` returns zero rows, and a follow-up `SELECT` cannot see an uncommitted row under `READ COMMITTED`. That is the classic find-or-create failure, which either 500s or double-spends.
 2. **`INSERT … ON CONFLICT DO NOTHING`** creates both wallets with no `SELECT`-then-`INSERT` window.
 3. **`SELECT … ORDER BY user_id FOR UPDATE`** takes both rows in a deterministic order before either balance moves, so opposite-direction transfers cannot deadlock.
 4. **`UPDATE … WHERE balance_paise >= amount`** decides affordability and applies the debit atomically. No balance is ever read then written.
@@ -134,4 +134,4 @@ The key is written before the mutation in the same transaction, so key and money
 
 Every setting comes from the environment; see [.env.example](.env.example). Required: `DATABASE_URL`, `JWT_SECRET`. Nothing sensitive is committed.
 
-On Supabase, use the **Connection Pooler** URI, not the direct one — the free tier has no IPv4 address on the direct connection and Render's egress is IPv4. Set `DATABASE_SSL=true`.
+On Supabase, use the **Connection Pooler** URI, not the direct one: the free tier has no IPv4 address on the direct connection and Render's egress is IPv4. Set `DATABASE_SSL=true`.

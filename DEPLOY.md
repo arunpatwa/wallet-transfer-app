@@ -2,9 +2,9 @@
 
 Render runs the Docker image; Supabase holds the database. Both free, no card.
 
-## 1. Database — Supabase
+## 1. Database: Supabase
 
-1. [supabase.com](https://supabase.com) → **New project**. Free plan. Pick a region near the Render region below (Singapore pairs with Singapore). Save the database password it generates — it is shown once.
+1. [supabase.com](https://supabase.com) → **New project**. Free plan. Pick a region near the Render region below (Singapore pairs with Singapore). Save the database password it generates, because it is shown once.
 2. **Project Settings → Database → Connection string**.
 3. Choose **Shared Pooler**, *not* Direct connection. It looks like:
 
@@ -12,13 +12,13 @@ Render runs the Docker image; Supabase holds the database. Both free, no card.
    postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
    ```
 
-**Why the pooler, and not the direct connection.** Supabase's free tier assigns no IPv4 address to the direct connection — port 5432 *direct* is IPv6-only, and the IPv4 add-on is paid. Render's egress is IPv4, so the direct URI is simply unreachable from Render and the app will fail to connect. The Shared Pooler is IPv4 on every tier.
+**Why the pooler, and not the direct connection.** Supabase's free tier assigns no IPv4 address to the direct connection: port 5432 *direct* is IPv6-only, and the IPv4 add-on is paid. Render's egress is IPv4, so the direct URI is simply unreachable from Render and the app will fail to connect. The Shared Pooler is IPv4 on every tier.
 
-Port 5432 on the **pooler host** is session mode and is what this app uses. Transaction mode (6543) also works — nothing in the code depends on session state, which is exactly why `pg_advisory_xact_lock` and `SET LOCAL` are used instead of session-scoped equivalents.
+Port 5432 on the **pooler host** is session mode and is what this app uses. Transaction mode (6543) also works, since nothing in the code depends on session state, which is exactly why `pg_advisory_xact_lock` and `SET LOCAL` are used instead of session-scoped equivalents.
 
 If the password contains `@ : / ?` or `#`, percent-encode it, or the URI will parse wrongly.
 
-## 2. Application — Render
+## 2. Application: Render
 
 1. [render.com](https://render.com) → **New → Blueprint**.
 2. Point it at `arunpatwa/wallet-transfer-app`. It reads [`render.yaml`](render.yaml) and configures runtime, health check path, and every environment variable except one.
@@ -51,12 +51,12 @@ Render's free tier spins a service down after 15 minutes idle; the next request 
 
 Point a free scheduler ([cron-job.org](https://cron-job.org) or UptimeRobot) at `https://wallet-transfer-app.onrender.com/healthz` every **10 minutes**.
 
-This stays inside the free allowance: Render grants 750 instance-hours per workspace per month, and one always-on service uses ~730 in a 31-day month. `/healthz` is the right target — it touches no dependency, so the ping costs nothing beyond the HTTP round trip and cannot generate database load.
+This stays inside the free allowance: Render grants 750 instance-hours per workspace per month, and one always-on service uses ~730 in a 31-day month. `/healthz` is the right target because it touches no dependency, so the ping costs nothing beyond the HTTP round trip and cannot generate database load.
 
 The burst script also waits out a cold start rather than reporting it as a failure, so the gate is reproducible even on a sleeping service.
 
 ## Notes and known limits
 
 - **Render's own free Postgres expires after 30 days**, which is why the database lives on Supabase.
-- **Supabase pauses a project after 7 days of inactivity.** Resuming is one click in the dashboard. The keep-alive ping only touches `/healthz`, which deliberately does not query the database — so if a long gap is expected, either point a second, less frequent ping at `/readyz`, or accept the manual resume.
+- **Supabase pauses a project after 7 days of inactivity.** Resuming is one click in the dashboard. The keep-alive ping only touches `/healthz`, which deliberately does not query the database. So if a long gap is expected, either point a second, less frequent ping at `/readyz`, or accept the manual resume.
 - Render's health check targets `/healthz`, not `/readyz`, on purpose: aiming it at readiness would turn a database outage into a restart loop, when the correct behaviour is to stay up, refuse writes with 503, and report readiness honestly.

@@ -1,6 +1,6 @@
-# Wallet / P2P Transfer Service — Design
+# Wallet / P2P Transfer Service: Design
 
-A wallet service where users hold a balance in integer paise and transfer to each other. The service must never lose or create money, never double-apply a retried transfer, and never let one user move another user's money — and must hold those guarantees under a concurrent burst.
+A wallet service where users hold a balance in integer paise and transfer to each other. The service must never lose or create money, never double-apply a retried transfer, and never let one user move another user's money, and must hold those guarantees under a concurrent burst.
 
 ## 1. Requirement coverage
 
@@ -8,9 +8,9 @@ Every graded requirement, the mechanism that satisfies it, and the test that pro
 
 | Requirement | Mechanism | Proven by |
 |---|---|---|
-| Conservation — no lost or created paise | Single `READ COMMITTED` transaction per transfer; debit and credit in one atom; double-entry `ledger_entries` sums to zero | `GET /invariants` identical before/after burst; P6, P9 |
+| Conservation, no lost or created paise | Single `READ COMMITTED` transaction per transfer; debit and credit in one atom; double-entry `ledger_entries` sums to zero | `GET /invariants` identical before/after burst; P6, P9 |
 | No torn / partial transfers | Both balance UPDATEs plus both ledger rows plus the terminal status in one transaction | P4, P6 |
-| Never overspend | `UPDATE … WHERE balance_paise >= $amt` — predicate evaluated atomically on the locked row; plus a `CHECK (balance_paise >= 0)` backstop | P6 (50 concurrent on a balance of exactly 5×) |
+| Never overspend | `UPDATE … WHERE balance_paise >= $amt`; predicate evaluated atomically on the locked row; plus a `CHECK (balance_paise >= 0)` backstop | P6 (50 concurrent on a balance of exactly 5×) |
 | Idempotent retry returns original outcome | `UNIQUE (from_user, idempotency_key)` written *inside* the money transaction, before the mutation | P2 (M concurrent identical) |
 | Same key + different body → 409 | `request_hash` (sha256 of canonical body) stored alongside the key and compared on replay | P3 |
 | Race-free get-or-create, never 2 rows, never a 500 | `INSERT … ON CONFLICT DO NOTHING` for wallets; `ON CONFLICT DO UPDATE` for the idempotency row so a loser blocks and then reads the committed winner | P1, P5 |
@@ -61,22 +61,22 @@ INSERT INTO wallets (user_id, balance_paise) VALUES ('@treasury', 10000000000000
 
 Four constraints carry the correctness weight:
 
-- `transfers_idem_uniq` — makes exactly-once a database property, not application logic.
-- `CHECK (balance_paise >= 0)` — a second, independent guard against overdraft. If the conditional UPDATE were ever wrong, the transaction aborts rather than committing negative money.
-- `ledger_transfer_user_uniq` — a transfer physically cannot be applied twice.
-- `transfers_no_self` — self-transfer is unrepresentable, not merely validated.
+- `transfers_idem_uniq` makes exactly-once a database property, not application logic.
+- `CHECK (balance_paise >= 0)` is a second, independent guard against overdraft. If the conditional UPDATE were ever wrong, the transaction aborts rather than committing negative money.
+- `ledger_transfer_user_uniq` means a transfer physically cannot be applied twice.
+- `transfers_no_self` makes self-transfer is unrepresentable, not merely validated.
 
 `status='pending'` exists only *inside* an open transaction, so a crashed process leaves no orphan rows.
 
-**Money supply and conservation.** `@treasury` is seeded once with 10^14 paise and is the only source of funds. Money enters a user wallet only by moving it out of the treasury along the same transaction path as any other transfer, so `SUM(balance_paise)` across all wallets is constant for the lifetime of the database and `SUM(ledger_entries.amount_paise)` is always zero. Conservation becomes an assertion a reviewer can check rather than a claim they must trust — exposed at `GET /invariants`.
+**Money supply and conservation.** `@treasury` is seeded once with 10^14 paise and is the only source of funds. Money enters a user wallet only by moving it out of the treasury along the same transaction path as any other transfer, so `SUM(balance_paise)` across all wallets is constant for the lifetime of the database and `SUM(ledger_entries.amount_paise)` is always zero. Conservation becomes an assertion a reviewer can check rather than a claim they must trust, and it is exposed at `GET /invariants`.
 
 The treasury id starts with `@`, which the `user_id` grammar (`^[A-Za-z0-9_.:-]{3,64}$`) forbids. The treasury is therefore *unaddressable* by any well-formed request: no token can be minted for it and no transfer can name it as a counterparty. The constant lives only in server code.
 
-**Integer money.** All amounts are `BIGINT` paise. A `pg` type parser maps OID 20 to `Number`; the treasury seed (10^14) sits well under 2^53, and per-transfer amounts are capped, so no value is ever at risk of precision loss. Floats never appear — a JSON number that is not an integer is rejected at the edge.
+**Integer money.** All amounts are `BIGINT` paise. A `pg` type parser maps OID 20 to `Number`; the treasury seed (10^14) sits well under 2^53, and per-transfer amounts are capped, so no value is ever at risk of precision loss. Floats never appear: a JSON number that is not an integer is rejected at the edge.
 
 **Migrations.** Numbered `.sql` files applied in order by `src/db/migrate.js`, tracked in a `schema_migrations` table. All pending migrations run in a single transaction guarded by `pg_advisory_xact_lock`, so two containers booting simultaneously cannot double-apply. A transaction-scoped lock is used rather than a session-scoped one because the connection may be pooled (see §9).
 
-## 3. Design call 1 — the get-or-create + transfer race
+## 3. Design call 1: the get-or-create + transfer race
 
 The whole of a transfer is one `READ COMMITTED` transaction with **no explicit locking**.
 
@@ -127,15 +127,15 @@ COMMIT;
 
 Three primitives make this correct, and each replaces a heavier mechanism:
 
-**`ON CONFLICT DO UPDATE`, not `DO NOTHING`, on the idempotency row.** This is the crux. With `DO NOTHING`, a request that loses the race gets zero rows back, and the follow-up `SELECT` sees *nothing* — because under `READ COMMITTED` the winner's row is still uncommitted. That is precisely the classic find-or-create failure: the loser either 500s on a missing row or, worse, proceeds and moves the money a second time. `DO UPDATE` instead takes a row lock on the conflicting tuple and **blocks until the winner commits**, then returns the committed row. The loser wakes up, sees a `request_hash` and a terminal status, and replays the winner's outcome. One statement, no retry loop, no gap.
+**`ON CONFLICT DO UPDATE`, not `DO NOTHING`, on the idempotency row.** This is the crux. With `DO NOTHING`, a request that loses the race gets zero rows back, and the follow-up `SELECT` sees *nothing*, because under `READ COMMITTED` the winner's row is still uncommitted. That is precisely the classic find-or-create failure: the loser either 500s on a missing row or, worse, proceeds and moves the money a second time. `DO UPDATE` instead takes a row lock on the conflicting tuple and **blocks until the winner commits**, then returns the committed row. The loser wakes up, sees a `request_hash` and a terminal status, and replays the winner's outcome. One statement, no retry loop, no gap.
 
-**`INSERT … ON CONFLICT DO NOTHING` for wallets.** Get-or-create with no `SELECT`-then-`INSERT` window at all, so two concurrent first-transfers cannot both insert. `DO NOTHING` is right here (unlike the idempotency row) because we don't need to read the loser's row back — we only need the row to exist, and it does.
+**`INSERT … ON CONFLICT DO NOTHING` for wallets.** Get-or-create with no `SELECT`-then-`INSERT` window at all, so two concurrent first-transfers cannot both insert. `DO NOTHING` is right here (unlike the idempotency row) because we don't need to read the loser's row back; we only need the row to exist, and it does.
 
-**A sorted `SELECT … FOR UPDATE` before either balance moves.** This design initially assumed that sorting the wallet *upsert* was enough to order locks, and that was wrong. `ON CONFLICT DO NOTHING` takes no lasting lock on a row that already exists, so for an established pair the upsert orders nothing — the lock order ends up being set by the debit and credit that follow, which is the transfer's *direction*. A→B took A then B while B→A took B then A, and they deadlocked.
+**A sorted `SELECT … FOR UPDATE` before either balance moves.** This design initially assumed that sorting the wallet *upsert* was enough to order locks, and that was wrong. `ON CONFLICT DO NOTHING` takes no lasting lock on a row that already exists, so for an established pair the upsert orders nothing: the lock order ends up being set by the debit and credit that follow, which is the transfer's *direction*. A→B took A then B while B→A took B then A, and they deadlocked.
 
-This was measured, not reasoned about: 40 opposite-direction transfers produced 503s and a 500 over 14.2 seconds. Adding the sorted `FOR UPDATE` brought the same test to 0.43 seconds. It is lock ordering only — affordability is still decided atomically by the conditional `UPDATE`, so no read-then-write window is introduced.
+This was measured, not reasoned about: 40 opposite-direction transfers produced 503s and a 500 over 14.2 seconds. Adding the sorted `FOR UPDATE` brought the same test to 0.43 seconds. It is lock ordering only; affordability is still decided atomically by the conditional `UPDATE`, so no read-then-write window is introduced.
 
-**`UPDATE … WHERE balance_paise >= $amt`.** The read and the write are one atomic statement against the locked row, so the check cannot go stale between decision and mutation. There is no `SELECT balance` anywhere in the write path — that read-then-write pattern is the canonical overspend bug.
+**`UPDATE … WHERE balance_paise >= $amt`.** The read and the write are one atomic statement against the locked row, so the check cannot go stale between decision and mutation. There is no `SELECT balance` anywhere in the write path, and that read-then-write pattern is the canonical overspend bug.
 
 **Where the idempotency key sits relative to the balance mutation.** Inside the same transaction, written *before* the mutation. Key and money commit or roll back as a single atom. There is no interleaving in which money moved but the key was not recorded, or the key was recorded but the money did not move.
 
@@ -144,10 +144,10 @@ This was measured, not reasoned about: 40 opposite-direction transfers produced 
 | Alternative | Why rejected |
 |---|---|
 | `SERIALIZABLE` isolation | Correct, but converts contention into serialization failures; a burst becomes a retry storm with a much worse tail. The conditional UPDATE already gives the needed atomicity at `READ COMMITTED`. |
-| `SELECT … FOR UPDATE` **as the affordability check** | Rejected in that role — reading a balance and then updating it is the canonical overspend bug. Note this is different from using `FOR UPDATE` purely to order locks, which the design does do and needs (see above); the point is that it must not be what decides whether the sender can afford the transfer. |
+| `SELECT … FOR UPDATE` **as the affordability check** | Rejected in that role, because reading a balance and then updating it is the canonical overspend bug. Note this is different from using `FOR UPDATE` purely to order locks, which the design does do and needs (see above); the point is that it must not be what decides whether the sender can afford the transfer. |
 | `pg_advisory_xact_lock` on the wallet pair | Serializes transfers that don't actually conflict, and adds a lock namespace to reason about. |
 | Redis / external distributed lock | A second system that can disagree with the source of truth about whether money moved. Lock expiry during a slow commit is a double-spend. |
-| Application mutex or single-writer queue | Evaporates the moment a second replica exists — and the deploy target runs replicas. |
+| Application mutex or single-writer queue | Evaporates the moment a second replica exists, and the deploy target runs replicas. |
 | Idempotency records in a separate store | Can drift from the money it exists to guard; the two-write problem has no clean solution without a transaction spanning both. |
 | `INSERT … EXCEPT`/catch-unique-violation then retry | Works, but needs an application retry loop and a second round trip to do what `ON CONFLICT DO UPDATE` does in one statement. |
 
@@ -155,61 +155,61 @@ This was measured, not reasoned about: 40 opposite-direction transfers produced 
 
 ## 4. Idempotency: storage, matching, expiry
 
-**Stored** as two columns on the `transfers` row itself — `idempotency_key` and `request_hash` — under `UNIQUE (from_user, idempotency_key)`. The key is not a separate table: the transfer record *is* the idempotency record, which is what removes any possibility of the two disagreeing.
+**Stored** as two columns on the `transfers` row itself: `idempotency_key` and `request_hash`, under `UNIQUE (from_user, idempotency_key)`. The key is not a separate table: the transfer record *is* the idempotency record, which is what removes any possibility of the two disagreeing.
 
 **Scoped per caller.** The unique constraint is on `(from_user, idempotency_key)`, not the key alone, so one user cannot deny service to another (or probe their history) by guessing keys.
 
-**Matched** on replay by comparing `request_hash`, the sha256 of a canonicalised `{to_user, amount_paise}` — keys sorted, integers normalised, so semantically identical bodies hash identically regardless of JSON key order or whitespace. The `idempotency_key` itself is excluded from the hash (it is the lookup key, not part of the intent).
+**Matched** on replay by comparing `request_hash`, the sha256 of a canonicalised `{to_user, amount_paise}`, with keys sorted and integers normalised, so semantically identical bodies hash identically regardless of JSON key order or whitespace. The `idempotency_key` itself is excluded from the hash (it is the lookup key, not part of the intent).
 
 - Same key, same hash → replay the stored outcome verbatim: the original `transfer_id`, the original `new_balance`, and the original status code, whether that was success or a durable rejection. No money moves.
 - Same key, different hash → **409 `idempotency_key_reuse`**. The client has reused a key for a different intent, which is a client bug; guessing which intent they meant would be worse than refusing.
 
-**Rejections are durable.** An insufficient-funds transfer commits with `status='rejected'`, so the same key returns the same 422 forever — including after the sender tops up. This is the strict reading of "a retry with the same key returns the original outcome": a key names one attempt with one answer, permanently. The alternative — rolling back and leaving the key unconsumed — is friendlier but lets one key produce different outcomes at different times, which is a materially weaker guarantee.
+**Rejections are durable.** An insufficient-funds transfer commits with `status='rejected'`, so the same key returns the same 422 forever, including after the sender tops up. This is the strict reading of "a retry with the same key returns the original outcome": a key names one attempt with one answer, permanently. The alternative, rolling back and leaving the key unconsumed, is friendlier but lets one key produce different outcomes at different times, which is a materially weaker guarantee.
 
-**Expiry: none, deliberately.** Keys are retained for the lifetime of the transfer record, because that record is the audit trail. A TTL sweep would be a data-retention policy, not a correctness mechanism, and it has a sharp edge: deleting a key silently re-arms a replay, so a client retrying an old request after expiry would move money twice. The cost is unbounded growth of one row per transfer, which is the same growth the ledger already has. At real scale the answer is range partitioning by month with cold partitions archived — not deletion.
+**Expiry: none, deliberately.** Keys are retained for the lifetime of the transfer record, because that record is the audit trail. A TTL sweep would be a data-retention policy, not a correctness mechanism, and it has a sharp edge: deleting a key silently re-arms a replay, so a client retrying an old request after expiry would move money twice. The cost is unbounded growth of one row per transfer, which is the same growth the ledger already has. At real scale the answer is range partitioning by month with cold partitions archived, not deletion.
 
 ## 5. Identity and authorization
 
-Bearer JWT, HS256, secret from the environment. Verification pins `algorithms: ['HS256']` — without that pin, a token claiming `alg: none` or `alg: RS256` can bypass signature checking entirely. `exp` and `iss` are both verified.
+Bearer JWT, HS256, secret from the environment. Verification pins `algorithms: ['HS256']`. Without that pin, a token claiming `alg: none` or `alg: RS256` can bypass signature checking entirely. `exp` and `iss` are both verified.
 
 The caller is `req.auth.sub` and nothing else. There is no code path that reads a caller identity from a header or a body field; a `from_user` supplied in a transfer body is ignored outright, and the correctness gate asserts this by sending one. Consequences:
 
 - A caller can only ever debit their own wallet, because `from_user` is bound to the verified `sub`.
-- `GET /transfers/:id` returns the transfer only if the caller is `from_user` or `to_user`, otherwise **404** rather than 403 — a 403 would confirm to a stranger that the id exists.
+- `GET /transfers/:id` returns the transfer only if the caller is `from_user` or `to_user`, otherwise **404** rather than 403, because a 403 would confirm to a stranger that the id exists.
 - `user_id` must match `^[A-Za-z0-9_.:-]{3,64}$`, which structurally excludes `@treasury`.
 
-`POST /auth/token` mints a token for a requested `user_id` and is gated by `DEV_TOKEN_ENABLED`. It is an explicit stand-in for a real identity provider so that the correctness gate is genuinely one command against the live URL; in a real deployment this endpoint does not exist and tokens arrive from the IdP. The service itself only ever *verifies* tokens — no verification path depends on the minting endpoint existing. The same reasoning covers `POST /dev/credit` (the treasury faucet), which is gated by `FAUCET_ENABLED` and capped per call.
+`POST /auth/token` mints a token for a requested `user_id` and is gated by `DEV_TOKEN_ENABLED`. It is an explicit stand-in for a real identity provider so that the correctness gate is genuinely one command against the live URL; in a real deployment this endpoint does not exist and tokens arrive from the IdP. The service itself only ever *verifies* tokens, and no verification path depends on the minting endpoint existing. The same reasoning covers `POST /dev/credit` (the treasury faucet), which is gated by `FAUCET_ENABLED` and capped per call.
 
-## 6. Design call 2 — consistency vs. availability
+## 6. Design call 2: consistency vs. availability
 
 **NFR priorities, in strict order: correctness → durability → availability → latency.**
 
-This ordering is a consequence of the workload, not a preference. The failure modes are not symmetric. An unavailable wallet is a support ticket; a double-spent wallet is an unreconcilable ledger, a financial loss, and a regulatory problem. Availability lost during an outage is recovered the moment the outage ends — a phantom or duplicated paisa is not recovered, because there is no record of what the truth should have been. Under CAP this is deliberately **CP**: on partition, refuse.
+This ordering is a consequence of the workload, not a preference. The failure modes are not symmetric. An unavailable wallet is a support ticket; a double-spent wallet is an unreconcilable ledger, a financial loss, and a regulatory problem. Availability lost during an outage is recovered the moment the outage ends. A phantom or duplicated paisa is not recovered, because there is no record of what the truth should have been. Under CAP this is deliberately **CP**: on partition, refuse.
 
-**Transfer path — reject, never degrade.** If the database is slow or unreachable the transfer path returns **503** and moves no money. Concretely: connection acquisition, `statement_timeout` (3s) and `lock_timeout` (2.5s) are all bounded, so a request fails fast instead of hanging. There is no in-memory queue of pending transfers, no write-behind buffer, no optimistic local application. Every one of those would mean accepting a transfer the service cannot prove it can honour — accepting money movement it has not durably recorded, which is exactly how money gets created. A caller that receives 503 may safely retry with the same idempotency key, so failing closed costs the client nothing but a retry.
+**Transfer path: reject, never degrade.** If the database is slow or unreachable the transfer path returns **503** and moves no money. Concretely: connection acquisition, `statement_timeout` (3s) and `lock_timeout` (2.5s) are all bounded, so a request fails fast instead of hanging. There is no in-memory queue of pending transfers, no write-behind buffer, no optimistic local application. Every one of those would mean accepting a transfer the service cannot prove it can honour: accepting money movement it has not durably recorded, which is exactly how money gets created. A caller that receives 503 may safely retry with the same idempotency key, so failing closed costs the client nothing but a retry.
 
-**Read path — also consistent, and this is the less obvious call.** `GET /accounts/me` reads through to the primary; there is no cache and no stale-read fallback. The temptation is to serve a cached balance under load since "a slightly stale balance is harmless" — but it is not harmless in a money system, because clients *act* on balances. A stale balance is what a client uses to decide whether to attempt a transfer, and stale-high balances manufacture insufficient-funds rejections that look like bugs, while stale-low ones suppress legitimate transfers. The authoritative balance is cheap here: one indexed primary-key lookup. If reads later needed to scale, the honest design is a read replica with the staleness bound made explicit in the response, not an opaque cache.
+**Read path: also consistent, and this is the less obvious call.** `GET /accounts/me` reads through to the primary; there is no cache and no stale-read fallback. The temptation is to serve a cached balance under load since "a slightly stale balance is harmless", but it is not harmless in a money system, because clients *act* on balances. A stale balance is what a client uses to decide whether to attempt a transfer, and stale-high balances manufacture insufficient-funds rejections that look like bugs, while stale-low ones suppress legitimate transfers. The authoritative balance is cheap here: one indexed primary-key lookup. If reads later needed to scale, the honest design is a read replica with the staleness bound made explicit in the response, not an opaque cache.
 
-Note that the write path never trusts a read anyway — the balance check lives inside the conditional UPDATE. So a stale read can never cause an overspend; it can only mislead a human or a client. That is why reads are the *one* place where degradation would be defensible, and it is still not worth it at this scale.
+Note that the write path never trusts a read anyway, since the balance check lives inside the conditional UPDATE. So a stale read can never cause an overspend; it can only mislead a human or a client. That is why reads are the *one* place where degradation would be defensible, and it is still not worth it at this scale.
 
-**Health signalling.** `/healthz` is liveness only and touches no dependency — it stays 200 whenever the process is alive, so an orchestrator never kills a healthy process over a database blip. `/readyz` runs `SELECT 1` with a short timeout and flips to 503 when the datastore is unreachable, so the load balancer drains traffic instead. Separating the two is what makes "fail closed" a drain rather than a crash loop.
+**Health signalling.** `/healthz` is liveness only and touches no dependency, so it stays 200 whenever the process is alive, so an orchestrator never kills a healthy process over a database blip. `/readyz` runs `SELECT 1` with a short timeout and flips to 503 when the datastore is unreachable, so the load balancer drains traffic instead. Separating the two is what makes "fail closed" a drain rather than a crash loop.
 
 ## 7. API surface and error taxonomy
 
 | Method | Path | Auth | Behaviour |
 |---|---|---|---|
-| POST | `/auth/token` | — | Flag-gated. Mints a token for a `user_id`. IdP stand-in. |
+| POST | `/auth/token` | none | Flag-gated. Mints a token for a `user_id`. IdP stand-in. |
 | POST | `/accounts` | JWT | Get-or-create caller's wallet → `{ balance_paise }`. Idempotent. |
 | GET | `/accounts/me` | JWT | `{ balance_paise }` |
 | POST | `/transfers` | JWT | `{ to_user, amount_paise, idempotency_key }` → `{ transfer_id, new_balance }` |
 | GET | `/transfers/:id` | JWT | Transfer detail, participants only |
 | POST | `/dev/credit` | JWT | Flag-gated, capped. Treasury → caller, via the normal transfer path. |
-| GET | `/healthz` | — | Liveness. No DB. |
-| GET | `/readyz` | — | Readiness incl. datastore. |
-| GET | `/metrics` | — | Prometheus exposition |
-| GET | `/logs` | — | Recent structured logs (ring buffer) |
-| GET | `/invariants` | — | Aggregates only: `wallet_count`, `total_balance_paise`, `ledger_sum_paise` |
-| GET | `/` | — | Minimal dashboard over `/metrics` and `/logs` |
+| GET | `/healthz` | none | Liveness. No DB. |
+| GET | `/readyz` | none | Readiness incl. datastore. |
+| GET | `/metrics` | none | Prometheus exposition |
+| GET | `/logs` | none | Recent structured logs (ring buffer) |
+| GET | `/invariants` | none | Aggregates only: `wallet_count`, `total_balance_paise`, `ledger_sum_paise` |
+| GET | `/` | none | Minimal dashboard over `/metrics` and `/logs` |
 
 | Status | Code | When |
 |---|---|---|
@@ -219,7 +219,7 @@ Note that the write path never trusts a read anyway — the balance check lives 
 | 409 | `idempotency_key_reuse` | Same `(from_user, key)`, different `request_hash` |
 | 422 | `insufficient_funds` | Well-formed and authorized, but unprocessable given current balance |
 | 422 | `self_transfer_not_allowed` | `to_user` equals the caller |
-| 503 | `database_unavailable` | Datastore unreachable or too slow — fail closed |
+| 503 | `database_unavailable` | Datastore unreachable or too slow; fail closed |
 
 **Why 422 for insufficient funds.** The request is syntactically valid, authenticated, and authorized; nothing about it is malformed, so 400 is wrong. 402 Payment Required is effectively reserved and signals "pay the service," a different meaning. 409 Conflict is reserved here for idempotency-key reuse, and keeping the two distinct lets a client branch on status code alone: 409 means *fix your key*, 422 means *fund the wallet*. Collapsing them would force clients to parse error bodies to know which.
 
@@ -235,12 +235,12 @@ Note that the write path never trusts a read anyway — the balance check lives 
 | Concurrent identical requests | One wins; losers block on the conflicting row and replay the committed outcome |
 | Zero amount | 400 |
 | Negative amount | 400 |
-| Non-integer amount (e.g. `10.5`) | 400 — never coerced or rounded |
+| Non-integer amount (e.g. `10.5`) | 400, never coerced or rounded |
 | Amount over cap | 400, keeps all arithmetic inside safe-integer range |
 | Both users brand new, both directions at once | Each wallet created exactly once; both transfers rejected 422 on zero balance; no 500 |
 | `from_user` injected into body | Ignored; caller is the token `sub` |
 | Reading someone else's transfer | 404 |
-| Treasury named as counterparty | 400 — `@treasury` fails the `user_id` grammar |
+| Treasury named as counterparty | 400; `@treasury` fails the `user_id` grammar |
 | Database unreachable | 503 on writes, `/readyz` 503, `/healthz` still 200 |
 
 ## 9. Deployment and containerization
@@ -253,7 +253,7 @@ Note that the write path never trusts a read anyway — the balance check lives 
 
 **Hosting.** Render (deploying the Docker image, not a buildpack) with managed Postgres on Supabase. Two constraints verified against current provider documentation rather than assumed, both of which shape the code:
 
-- Supabase's free tier assigns no IPv4 address to the direct connection (port 5432 direct is IPv6-only; the IPv4 add-on is paid). Render's egress is IPv4, so the app **must** connect through the Shared Pooler (Supavisor), which is IPv4 on all tiers. Session mode gives full session semantics; transaction mode also works. Because the connection is pooled, the code must not depend on session state — hence `pg_advisory_xact_lock` in the migration runner and `SET LOCAL` for timeouts inside each transaction rather than a pool-level `SET`.
+- Supabase's free tier assigns no IPv4 address to the direct connection (port 5432 direct is IPv6-only; the IPv4 add-on is paid). Render's egress is IPv4, so the app **must** connect through the Shared Pooler (Supavisor), which is IPv4 on all tiers. Session mode gives full session semantics; transaction mode also works. Because the connection is pooled, the code must not depend on session state, hence `pg_advisory_xact_lock` in the migration runner and `SET LOCAL` for timeouts inside each transaction rather than a pool-level `SET`.
 - Render's free tier spins a service down after 15 minutes idle with a 30–60s cold start, and grants 750 instance-hours per month. 750 hours covers one always-on service for a full month, so a 10-minute keep-alive ping keeps the service warm for a reviewer without exceeding the allowance.
 
 Render's own free Postgres expires after 30 days, which is why the database lives on Supabase.
@@ -267,7 +267,7 @@ Meaningful events, each with the correlation id, caller, and amount:
 - `transfer.applied`
 - `transfer.rejected` with `reason=insufficient_funds`
 - `transfer.idempotent_replay`
-- `transfer.race_lost` — the concurrent request that blocked on the conflicting idempotency row, logging `blocked_ms` as evidence it genuinely waited on the winner
+- `transfer.race_lost`: the concurrent request that blocked on the conflicting idempotency row, logging `blocked_ms` as evidence it genuinely waited on the winner
 - `wallet.getorcreate` with `created` true/false, and `wallet.race_lost` for the request that found the row already present
 - `auth.failed` with a reason, never the token itself
 
@@ -275,7 +275,7 @@ Meaningful events, each with the correlation id, caller, and amount:
 
 ## 11. Correctness gate
 
-`./burst.sh <base-url>` — one command, zero dependencies, using Node's built-in `fetch`. It snapshots `GET /invariants` first and last, creates brand-new users per run, and exits non-zero on any failure after printing a PASS/FAIL table.
+`./burst.sh <base-url>` is one command, zero dependencies, using Node's built-in `fetch`. It snapshots `GET /invariants` first and last, creates brand-new users per run, and exits non-zero on any failure after printing a PASS/FAIL table.
 
 | Phase | What it establishes |
 |---|---|
@@ -311,12 +311,12 @@ Manual checks: `docker compose stop db`, then confirm `/healthz` is still 200 wh
 
 ## 13. Implementation order
 
-Ordered by dependency — each stage is independently runnable and testable.
+Ordered by dependency; each stage is independently runnable and testable.
 
 1. Schema, migration runner, treasury seed.
 2. Core infrastructure: config validation, `pg` pool with bounded timeouts, logger with correlation ids and ring buffer, metrics registry, error taxonomy.
 3. Auth: JWT verification middleware and the token endpoint.
-4. **The transfer transaction** and the account service — the correctness core, tested before any HTTP exists.
+4. **The transfer transaction** and the account service: the correctness core, tested before any HTTP exists.
 5. HTTP routes, health and readiness, `/invariants`.
 6. Integration and in-process concurrency tests: overspend, concurrent replay, brand-new bidirectional race, conservation.
 7. Dockerfile, compose, CI.
@@ -329,8 +329,8 @@ Ordered by dependency — each stage is independently runnable and testable.
 
 | Component | Tier | Cost |
 |---|---|---|
-| Render web service | Free — 512 MB, 750 instance-hours/month | ₹0 |
-| Supabase Postgres | Free — 500 MB | ₹0 |
+| Render web service | Free: 512 MB, 750 instance-hours/month | ₹0 |
+| Supabase Postgres | Free: 500 MB | ₹0 |
 | GitHub + Actions | Free for public repositories | ₹0 |
 | Keep-alive cron | Free | ₹0 |
 
@@ -341,5 +341,5 @@ No payment method on file with any provider. Documented limits: Render cold-star
 - Live application URL.
 - Public GitHub repository.
 - Public logs link (`/logs`, plus the dashboard at `/`).
-- `burst.sh` — the one-command correctness gate.
+- `burst.sh`, the one-command correctness gate.
 - Write-up covering: data model; the get-or-create + transfer mechanism and the heavier alternatives rejected; idempotency storage, matching, expiry, and same-key-different-body detection; identity and authorization; the consistency-vs-availability decision with explicit NFR priorities; edge cases handled; containerization, deploy and observability choices; AI usage, separating what was directed from what was decided; and the free-tier cost note.
