@@ -3,6 +3,7 @@ import { ERROR_CODES, invalidRequest, notFound, toAppError } from './errors.js';
 import { log, newCorrelationId, withRequestContext } from './logger.js';
 import * as metrics from './metrics.js';
 import { accountsRouter } from './routes/accounts.js';
+import { dashboardRouter } from './routes/dashboard.js';
 import { demoRouter } from './routes/demo.js';
 import { systemRouter } from './routes/system.js';
 import { transfersRouter } from './routes/transfers.js';
@@ -79,6 +80,7 @@ export function createApp() {
   // cheap way to consume memory.
   app.use(express.json({ limit: '16kb' }));
 
+  app.use(dashboardRouter);
   app.use(systemRouter);
   app.use(demoRouter);
   app.use('/accounts', accountsRouter);
