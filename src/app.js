@@ -13,6 +13,27 @@ import { transfersRouter } from './routes/transfers.js';
  * than the raw path, so /transfers/<uuid> aggregates as /transfers/:id instead
  * of producing one time series per transfer.
  */
+/**
+ * Routes whose per-request log line is suppressed.
+ *
+ * These are the operational endpoints: the dashboard polls three of them every
+ * few seconds and a platform health check hits another every 30. Left in, they
+ * flood the ring buffer and evict the events it exists to show -- observed in
+ * practice at 924 of 1000 entries, which pushed every transfer event out of the
+ * public log view.
+ *
+ * They are still counted in metrics. Only the log line is dropped, because the
+ * buffer is a scarce, human-facing resource and a counter is not.
+ */
+const UNLOGGED_ROUTES = new Set([
+  '/',
+  '/metrics',
+  '/logs',
+  '/healthz',
+  '/readyz',
+  '/invariants',
+]);
+
 function routeLabel(req) {
   if (!req.route) return 'unmatched';
   const base = req.baseUrl ?? '';
@@ -53,15 +74,17 @@ function observability(req, res, next) {
 
       // One line per request. The events inside the transfer transaction carry
       // the same request_id, so a single transfer is reconstructable from logs.
-      log().info(
-        {
-          event: 'http.request',
-          route,
-          status: res.statusCode,
-          duration_ms: Math.round(durationSeconds * 1000),
-        },
-        'request completed',
-      );
+      if (!UNLOGGED_ROUTES.has(route)) {
+        log().info(
+          {
+            event: 'http.request',
+            route,
+            status: res.statusCode,
+            duration_ms: Math.round(durationSeconds * 1000),
+          },
+          'request completed',
+        );
+      }
     });
 
     next();
