@@ -1,0 +1,49 @@
+# Brings up the app and its database with a single `docker compose up --build`.
+#
+# The app waits for the database to report healthy rather than merely started,
+# because Postgres accepts TCP connections some seconds before it will accept
+# queries -- without the condition, the first boot races the migration.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: wallet
+      POSTGRES_PASSWORD: wallet
+      POSTGRES_DB: wallet
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U wallet -d wallet']
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+    # Published on 5433 so this never collides with a Postgres already running
+    # on the host's 5432.
+    ports:
+      - '5433:5432'
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgres://wallet:wallet@db:5432/wallet
+      # Overridable from the shell, with a throwaway default so the stack comes
+      # up on a clean checkout without any setup. Real deployments inject a
+      # generated secret; nothing sensitive is committed.
+      JWT_SECRET: ${JWT_SECRET:-local-compose-secret-not-for-production-000000}
+      DATABASE_SSL: 'false'
+      NODE_ENV: production
+      LOG_LEVEL: info
+      # On by default here so the burst script runs against the local stack with
+      # no extra steps. Both default to off in the application itself.
+      DEV_TOKEN_ENABLED: 'true'
+      FAUCET_ENABLED: 'true'
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - '8080:8080'
+
+volumes:
+  dbdata:

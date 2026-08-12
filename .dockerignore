@@ -1,0 +1,17 @@
+node_modules
+npm-debug.log
+.git
+.github
+.gitignore
+test
+vitest.config.js
+scripts
+coverage
+*.md
+.env
+.env.*
+!.env.example
+.claude
+Dockerfile
+.dockerignore
+docker-compose.yml

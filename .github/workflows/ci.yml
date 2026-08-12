@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # Proves the claim that tests pass from a clean checkout: nothing here is
+  # carried over from a developer machine.
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: wallet
+          POSTGRES_PASSWORD: wallet
+          POSTGRES_DB: wallet_test
+        options: >-
+          --health-cmd "pg_isready -U wallet"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Apply migrations
+        run: npm run migrate
+        env:
+          DATABASE_URL: postgres://wallet:wallet@localhost:5432/wallet_test
+
+      - name: Run tests
+        run: npm test
+        env:
+          TEST_DATABASE_URL: postgres://wallet:wallet@localhost:5432/wallet_test
+          JWT_SECRET: ci-only-secret-at-least-32-characters-long
+
+  # The deployed artefact is the image, so the image has to build and boot.
+  image:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t wallet-transfer-app:ci .
+
+      - name: Verify it runs as a non-root user
+        run: |
+          user=$(docker run --rm wallet-transfer-app:ci whoami)
+          echo "container user: $user"
+          test "$user" = "node"
+
+      - name: Report image size
+        run: docker image ls wallet-transfer-app:ci
