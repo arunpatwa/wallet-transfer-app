@@ -39,10 +39,15 @@ const PAGE = /* html */ `<!doctype html>
   h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
        color: var(--muted); margin: 2rem 0 .75rem; font-weight: 600; }
   .sub { color: var(--muted); font-size: .875rem; margin: 0 0 .5rem; }
-  .grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); }
+  .grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
   .tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .8rem .9rem; }
   .tile .k { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
-  .tile .v { font-family: var(--mono); font-size: 1.35rem; margin-top: .2rem; word-break: break-all; }
+  .tile .v { font-family: var(--mono); font-size: 1.35rem; margin-top: .2rem; white-space: nowrap; }
+  /* The total money supply is 15 digits, which in en-IN grouping is 21
+     characters and wraps onto a second line at the default size. Long values
+     step down instead of breaking mid-number -- a wrapped figure is harder to
+     read than a smaller one. */
+  .tile .v.long { font-size: 1rem; letter-spacing: -.01em; }
   .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
   table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: .78rem; }
   th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -98,7 +103,9 @@ const fmt = new Intl.NumberFormat('en-IN');
 let filter = null;
 
 function tile(key, value, cls) {
-  return '<div class="tile"><div class="k">' + key + '</div><div class="v ' + (cls || '') + '">' + value + '</div></div>';
+  const long = String(value).length > 13 ? ' long' : '';
+  return '<div class="tile"><div class="k">' + key + '</div><div class="v ' +
+    (cls || '') + long + '">' + value + '</div></div>';
 }
 
 // Minimal Prometheus text-format reader: enough to pull the samples this page
