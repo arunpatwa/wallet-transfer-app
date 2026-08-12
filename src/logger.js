@@ -92,10 +92,17 @@ export const rootLogger = pino(
       censor: '[redacted]',
     },
   },
-  pino.multistream([
-    { stream: process.stdout, level: config.logLevel },
-    { stream: ringDestination, level: config.logLevel },
-  ]),
+  pino.multistream(
+    // Under test, log only to the ring buffer. The tests assert that the
+    // required events are emitted, which needs a real log level, but writing
+    // every line to stdout would bury the test output.
+    config.nodeEnv === 'test'
+      ? [{ stream: ringDestination, level: config.logLevel }]
+      : [
+          { stream: process.stdout, level: config.logLevel },
+          { stream: ringDestination, level: config.logLevel },
+        ],
+  ),
 );
 
 // --- request context ---------------------------------------------------------
