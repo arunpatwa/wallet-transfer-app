@@ -245,7 +245,7 @@ Note that the write path never trusts a read anyway — the balance check lives 
 
 ## 9. Deployment and containerization
 
-**Container.** Multi-stage `Dockerfile`: a builder stage runs `npm ci`, the runtime stage is `node:22-alpine` with `npm ci --omit=dev`, running as the non-root `node` user. A container `HEALTHCHECK` hits `/healthz` using busybox `wget`, already present in the base image, so no extra package is installed. Target image under 200 MB.
+**Container.** Multi-stage `Dockerfile`: a builder stage runs `npm ci`, the runtime stage is `node:22-alpine` with `npm ci --omit=dev`, running as the non-root `node` user. A container `HEALTHCHECK` hits `/healthz` using busybox `wget`, already present in the base image, so no extra package is installed. Measured: 250 MB on disk, 60.3 MB content size, the bulk of which is the Node runtime in the base image.
 
 **Local.** `docker compose up` brings up `postgres:16-alpine` with a healthcheck plus the app, which waits for `service_healthy`, runs migrations, then serves. One command, no manual steps.
 

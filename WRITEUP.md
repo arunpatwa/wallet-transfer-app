@@ -152,7 +152,7 @@ Worth being precise about the limit of that risk: the write path never trusts a 
 
 ## Containerization, deploy, observability
 
-**Container.** Multi-stage: a builder resolves production dependencies so the npm cache and devDependencies never reach the runtime layer. Runtime is `node:22-alpine` running as the unprivileged `node` user, with a `HEALTHCHECK` on `/healthz` using busybox `wget` — no extra package installed. The entrypoint applies migrations then serves; safe on concurrent boots because the runner holds a transaction-scoped advisory lock (transaction-scoped, not session-scoped, because the connection may be pooled).
+**Container.** Multi-stage: a builder resolves production dependencies so the npm cache and devDependencies never reach the runtime layer. Runtime is `node:22-alpine` running as the unprivileged `node` user, with a `HEALTHCHECK` on `/healthz` using busybox `wget` — no extra package installed. Verified on the built image: `whoami` reports `node`, the healthcheck reports `healthy`, and it measures 250 MB on disk / 60.3 MB content size, mostly the Node runtime in the base layer. The entrypoint applies migrations then serves; safe on concurrent boots because the runner holds a transaction-scoped advisory lock (transaction-scoped, not session-scoped, because the connection may be pooled).
 
 **Local.** `docker compose up --build` brings up app and Postgres in one command, waiting for the database to report *healthy* rather than merely started — Postgres accepts TCP some seconds before it accepts queries, and without the condition the first boot races the migration. Postgres is published on 5433 so it cannot collide with a host instance.
 
