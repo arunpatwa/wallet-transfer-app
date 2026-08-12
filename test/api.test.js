@@ -113,7 +113,7 @@ describe('validation', () => {
     ['recipient naming the treasury', { to_user: '@treasury' }, 400],
   ];
 
-  it.each(cases)('rejects %s with %i', async (_name, override, expected) => {
+  it.each(cases)('rejects %s', async (_name, override, expected) => {
     const sender = await fundedUser(100 * AMOUNT);
     const body = {
       to_user: newUserId(),
@@ -181,6 +181,40 @@ describe('accounts', () => {
     const me = await api('/accounts/me', { token });
     expect(me.status).toBe(200);
     expect(me.body.balance_paise).toBe(0);
+  });
+});
+
+describe('method handling', () => {
+  // A browser address bar sends GET. Answering 404 for a POST-only endpoint
+  // sends someone hunting for a typo in a URL that was correct.
+  const wrongMethod = [
+    ['GET', '/accounts', 'POST'],
+    ['GET', '/transfers', 'POST'],
+    ['GET', '/auth/token', 'POST'],
+    ['POST', '/accounts/me', 'GET'],
+    ['POST', '/healthz', 'GET'],
+  ];
+
+  it.each(wrongMethod)('answers %s %s with 405 and Allow: %s', async (method, path, allowed) => {
+    const response = await fetch(`${await startServer()}${path}`, { method });
+    expect(response.status).toBe(405);
+    expect(response.headers.get('allow')).toBe(allowed);
+    const body = await response.json();
+    expect(body.error.code).toBe('method_not_allowed');
+    expect(body.error.allowed).toEqual([allowed]);
+  });
+
+  it('still answers 404 for a path that genuinely does not exist', async () => {
+    const response = await api('/nope');
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe('not_found');
+  });
+
+  it('does not shadow a real transfer id lookup', async () => {
+    // /transfers/:id is a known GET route; a GET with no token must still reach
+    // auth and return 401, not 405.
+    const response = await api(`/transfers/${randomUUID()}`);
+    expect(response.status).toBe(401);
   });
 });
 
