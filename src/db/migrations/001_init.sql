@@ -10,7 +10,11 @@ CREATE TABLE wallets (
   -- A database-level backstop against overdraft, independent of the
   -- conditional UPDATE in the transfer path. If that check were ever wrong,
   -- the transaction aborts instead of committing negative money.
-  balance_paise BIGINT      NOT NULL DEFAULT 0 CHECK (balance_paise >= 0),
+  -- Named explicitly so the application can recognise this specific violation
+  -- and treat it as the invariant breach it would be.
+  balance_paise BIGINT      NOT NULL DEFAULT 0
+                            CONSTRAINT wallets_balance_non_negative
+                            CHECK (balance_paise >= 0),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -21,7 +25,9 @@ CREATE TABLE transfers (
   id                 UUID        PRIMARY KEY,
   from_user          TEXT        NOT NULL,
   to_user            TEXT        NOT NULL,
-  amount_paise       BIGINT      NOT NULL CHECK (amount_paise > 0),
+  amount_paise       BIGINT      NOT NULL
+                                 CONSTRAINT transfers_amount_positive
+                                 CHECK (amount_paise > 0),
   idempotency_key    TEXT        NOT NULL,
   -- sha256 of the canonicalised {to_user, amount_paise}. Compared on replay to
   -- distinguish an honest retry from the same key reused for a different
