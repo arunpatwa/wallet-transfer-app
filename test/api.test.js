@@ -168,6 +168,9 @@ describe('accounts', () => {
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     expect(second.body).toEqual(first.body);
+    // `balance` is the field name in the specification; `balance_paise` states
+    // the unit. Both are asserted so neither can be dropped by accident.
+    expect(first.body.balance).toBe(0);
     expect(first.body.balance_paise).toBe(0);
   });
 
@@ -180,6 +183,7 @@ describe('accounts', () => {
     await api('/accounts', { method: 'POST', token });
     const me = await api('/accounts/me', { token });
     expect(me.status).toBe(200);
+    expect(me.body.balance).toBe(0);
     expect(me.body.balance_paise).toBe(0);
   });
 });

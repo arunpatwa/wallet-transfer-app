@@ -54,8 +54,8 @@ All endpoints except `/auth/token` and the operational ones require `Authorizati
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/accounts` | Get-or-create the caller's wallet → `{ user_id, balance_paise }`. Idempotent. |
-| `GET` | `/accounts/me` | `{ user_id, balance_paise }` |
+| `POST` | `/accounts` | Get-or-create the caller's wallet → `{ user_id, balance, balance_paise }`. Idempotent. |
+| `GET` | `/accounts/me` | `{ user_id, balance, balance_paise }` |
 | `POST` | `/transfers` | `{ to_user, amount_paise, idempotency_key }` → `{ transfer_id, new_balance }` |
 | `GET` | `/transfers/:id` | Transfer detail. Participants only; anyone else gets 404. |
 | `GET` | `/healthz` | Liveness. Touches no dependency. |
